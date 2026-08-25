@@ -25,6 +25,10 @@ limitations under the License.
 #include "NEON_2_SSE.h"  // IWYU pragma: export
 #endif
 
+#if defined(__riscv_vector)
+#define USE_RVV
+#endif
+
 // NEON_OR_PORTABLE(SomeFunc, args) calls NeonSomeFunc(args) if USE_NEON is
 // defined, PortableSomeFunc(args) otherwise.
 #ifdef USE_NEON
@@ -36,5 +40,15 @@ limitations under the License.
 #define NEON_OR_PORTABLE(funcname, ...) Portable##funcname(__VA_ARGS__)
 
 #endif  // defined(USE_NEON)
+
+// RVV_OR_NEON_OR_PORTABLE(SomeFunc, args) prefers the RVV implementation,
+// then the existing NEON implementation, and finally the portable one.
+#if defined(USE_RVV)
+#define RVV_OR_NEON_OR_PORTABLE(funcname, ...) Rvv##funcname(__VA_ARGS__)
+#elif defined(USE_NEON)
+#define RVV_OR_NEON_OR_PORTABLE(funcname, ...) Neon##funcname(__VA_ARGS__)
+#else
+#define RVV_OR_NEON_OR_PORTABLE(funcname, ...) Portable##funcname(__VA_ARGS__)
+#endif
 
 #endif  // TENSORFLOW_LITE_KERNELS_INTERNAL_OPTIMIZED_NEON_CHECK_H_

@@ -33,7 +33,6 @@ limitations under the License.
 
 namespace tflite {
 namespace benchmark {
-using tensorflow::StatWithPercentiles;
 
 constexpr int kMemoryCheckIntervalMs = 50;
 

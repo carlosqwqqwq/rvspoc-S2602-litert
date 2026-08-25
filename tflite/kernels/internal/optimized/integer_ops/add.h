@@ -16,15 +16,18 @@ limitations under the License.
 #define TENSORFLOW_LITE_KERNELS_INTERNAL_OPTIMIZED_INTEGER_OPS_ADD_H_
 
 #include <algorithm>
+#include <vector>
 
 #include "fixedpoint/fixedpoint.h"
 #include "ruy/profiler/instrumentation.h"  // from @ruy
+#include "tflite/kernels/cpu_backend_threadpool.h"
 #include "tflite/kernels/internal/common.h"
 #include "tflite/kernels/internal/compatibility.h"
 #include "tflite/kernels/internal/optimized/avx2_quantization_utils.h"
 #include "tflite/kernels/internal/optimized/cpu_check.h"
 #include "tflite/kernels/internal/optimized/neon_check.h"
 #include "tflite/kernels/internal/optimized/optimized_ops.h"
+#include "tflite/kernels/internal/optimized/rvv_optimized_ops.h"
 #include "tflite/kernels/internal/reference/integer_ops/add.h"
 #include "tflite/kernels/internal/types.h"
 
@@ -42,6 +45,16 @@ inline void AddElementwiseInt8(int size, const ArithmeticParams& params,
   TFLITE_DCHECK_GT(params.input2_offset, -256);
   TFLITE_DCHECK_LT(params.input1_offset, 256);
   TFLITE_DCHECK_LT(params.input2_offset, 256);
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::QuantizedBinaryInt8<false>(
+      input1_data, input2_data, output_data, size, params.input1_offset,
+      params.input2_offset, params.left_shift, params.input1_multiplier,
+      params.input1_shift, params.input2_multiplier, params.input2_shift,
+      params.output_multiplier, params.output_shift, params.output_offset,
+      params.quantized_activation_min, params.quantized_activation_max);
+  return;
+#endif
 
 #ifdef USE_NEON
   const int8x16_t output_activation_min_vector =
@@ -163,6 +176,62 @@ inline void AddElementwiseInt8(int size, const ArithmeticParams& params,
     output_data[i] = static_cast<int8>(clamped_output);
   }
 }
+
+#if defined(__riscv_vector)
+constexpr int kRvvAddThreadingMinElements = 65536;
+
+struct AddElementwiseInt8Task : cpu_backend_threadpool::Task {
+  AddElementwiseInt8Task(int start, int end, const ArithmeticParams& params,
+                         const int8* input1_data, const int8* input2_data,
+                         int8* output_data)
+      : start_(start),
+        end_(end),
+        params_(params),
+        input1_data_(input1_data),
+        input2_data_(input2_data),
+        output_data_(output_data) {}
+
+  void Run() override {
+    AddElementwiseInt8(end_ - start_, params_, input1_data_ + start_,
+                       input2_data_ + start_, output_data_ + start_);
+  }
+
+  int start_;
+  int end_;
+  ArithmeticParams params_;
+  const int8* input1_data_;
+  const int8* input2_data_;
+  int8* output_data_;
+};
+
+inline void AddElementwiseInt8Threaded(
+    int size, const ArithmeticParams& params, const int8* input1_data,
+    const int8* input2_data, int8* output_data,
+    CpuBackendContext* cpu_backend_context) {
+  const int max_threads = cpu_backend_context == nullptr
+                              ? 1
+                              : std::max(
+                                    1, cpu_backend_context->max_num_threads());
+  const int task_count = std::min(
+      max_threads, (size + kRvvAddThreadingMinElements - 1) /
+                       kRvvAddThreadingMinElements);
+  if (task_count <= 1) {
+    AddElementwiseInt8(size, params, input1_data, input2_data, output_data);
+    return;
+  }
+
+  std::vector<AddElementwiseInt8Task> tasks;
+  tasks.reserve(task_count);
+  for (int task = 0; task < task_count; ++task) {
+    const int start = task * size / task_count;
+    const int end = (task + 1) * size / task_count;
+    tasks.emplace_back(start, end, params, input1_data, input2_data,
+                       output_data);
+  }
+  cpu_backend_threadpool::Execute(static_cast<int>(tasks.size()), tasks.data(),
+                                  cpu_backend_context);
+}
+#endif
 
 // Element-wise add is used for the non-broadcast add.
 inline void AddElementwiseInt16(int size, const ArithmeticParams& params,
@@ -368,6 +437,16 @@ inline void AddScalarBroadcast(int size, const ArithmeticParams& params,
   TFLITE_DCHECK_LT(params.input1_offset, 256);
   TFLITE_DCHECK_LT(params.input2_offset, 256);
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::AddScalarInt8(
+      size, input1_data, input2_data, output_data, params.input1_offset,
+      params.input2_offset, params.left_shift, params.input1_multiplier,
+      params.input1_shift, params.input2_multiplier, params.input2_shift,
+      params.output_multiplier, params.output_shift, params.output_offset,
+      params.quantized_activation_min, params.quantized_activation_max);
+  return;
+#endif
+
   int i = 0;
 
 #ifdef USE_NEON
@@ -458,7 +537,8 @@ inline void AddScalarBroadcast(int size, const ArithmeticParams& params,
 inline void Add(const ArithmeticParams& params,
                 const RuntimeShape& input1_shape, const int8* input1_data,
                 const RuntimeShape& input2_shape, const int8* input2_data,
-                const RuntimeShape& output_shape, int8* output_data) {
+                const RuntimeShape& output_shape, int8* output_data,
+                CpuBackendContext* cpu_backend_context = nullptr) {
   TFLITE_DCHECK_LE(params.quantized_activation_min,
                    params.quantized_activation_max);
   ruy::profiler::ScopeLabel label("AddInt8/8bit");
@@ -469,7 +549,12 @@ inline void Add(const ArithmeticParams& params,
   TFLITE_DCHECK_GT(params.input2_offset, -256);
   TFLITE_DCHECK_LT(params.input1_offset, 256);
   TFLITE_DCHECK_LT(params.input2_offset, 256);
+#if defined(__riscv_vector)
+  AddElementwiseInt8Threaded(flat_size, params, input1_data, input2_data,
+                             output_data, cpu_backend_context);
+#else
   AddElementwiseInt8(flat_size, params, input1_data, input2_data, output_data);
+#endif
 }
 
 inline void Add(const ArithmeticParams& params,

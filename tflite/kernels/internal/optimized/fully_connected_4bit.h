@@ -28,6 +28,8 @@ limitations under the License.
 #include "tflite/kernels/internal/optimized/4bit/sse_fully_connected.h"
 #elif defined(FC_4BIT_NEON) && (defined(__ARM_NEON__) || defined(__ARM_NEON))
 #include "tflite/kernels/internal/optimized/4bit/neon_fully_connected.h"
+#elif defined(FC_4BIT_RVV) && defined(__riscv_vector)
+#include "tflite/kernels/internal/optimized/4bit/rvv_fully_connected.h"
 #else
 #include "tflite/kernels/internal/optimized/4bit/fully_connected_reference.h"
 #endif

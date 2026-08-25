@@ -366,51 +366,72 @@ struct TestUnpack {
 };
 
 class RunUnpackTests
-    : public ::testing::TestWithParam<::testing::tuple<int, int, int>> {};
+    : public ::testing::TestWithParam<::testing::tuple<int, int, int, int>> {};
 
-TEST_P(RunUnpackTests, RunUnpackTests) {
-  auto params = GetParam();
-  int src_rows = std::get<0>(params);
-  int src_cols = std::get<1>(params);
-  // In this case, we only unpack 1 rhs row,
-  // so the batch_size and accumulator rows must match.
-  int output_rows = src_rows;
-  int output_cols = std::get<2>(params);
-  std::vector<float> test_input_scales(src_rows);
-  std::vector<float> test_filter_scales(src_cols);
+template <int Width>
+void CheckUnpackWidth(int batch_size, int layout_cols, int output_cols) {
+  const int layout_rows = (batch_size + Width - 1) & ~(Width - 1);
+  std::vector<float> test_input_scales(layout_rows);
+  std::vector<float> test_filter_scales(layout_cols);
   std::vector<int32_t> test_data;
-  test_data.reserve(src_rows * src_cols);
-  int outer_cols = src_cols / optimized_4bit::FilterWidth;
-  int outer_rows = src_rows;
-  for (int j = 0; j < outer_cols; ++j) {
-    for (int i = 0; i < outer_rows; ++i) {
-      for (int k = 0; k < optimized_4bit::FilterWidth; ++k) {
-        test_data.push_back(i);
+  test_data.reserve(layout_rows * layout_cols);
+  const int outer_rows = layout_rows / Width;
+  const int outer_cols = layout_cols / optimized_4bit::FilterWidth;
+  for (int outer_col = 0; outer_col < outer_cols; ++outer_col) {
+    for (int outer_row = 0; outer_row < outer_rows; ++outer_row) {
+      for (int w = 0; w < Width; ++w) {
+        const int batch = outer_row * Width + w;
+        for (int unit = 0; unit < optimized_4bit::FilterWidth; ++unit) {
+          test_data.push_back(batch + 1);
+        }
       }
     }
   }
-  for (int i = 0; i < src_rows; ++i) {
+  for (int i = 0; i < layout_rows; ++i) {
     test_input_scales[i] = real_dist(random_engine);
   }
-  for (int i = 0; i < src_cols; ++i) {
+  for (int i = 0; i < layout_cols; ++i) {
     test_filter_scales[i] = real_dist(random_engine);
   }
-  TestUnpack test(test_data, test_input_scales, test_filter_scales, src_rows,
-                  src_cols, output_rows, output_cols);
-  test.Unpack<4, 1>();
-  std::vector<float> result = test.output_data;
-  for (int i = 0; i < output_rows; ++i) {
+  TestUnpack test(test_data, test_input_scales, test_filter_scales,
+                  layout_rows, layout_cols, batch_size, output_cols);
+  test.template Unpack<4, Width>();
+  for (int i = 0; i < batch_size; ++i) {
     for (int j = 0; j < output_cols; ++j) {
-      float res = result[i * output_cols + j];
-      EXPECT_EQ(res, i * test_input_scales[i] * test_filter_scales[j]);
+      const float expected = (i + 1) * test_input_scales[i] *
+                             test_filter_scales[j];
+      EXPECT_EQ(test.output_data[i * output_cols + j], expected);
     }
+  }
+}
+
+TEST_P(RunUnpackTests, RunUnpackTests) {
+  auto params = GetParam();
+  const int width = std::get<0>(params);
+  const int batch_size = std::get<1>(params);
+  const int layout_cols = std::get<2>(params);
+  const int output_cols = std::get<3>(params);
+  switch (width) {
+    case 1:
+      CheckUnpackWidth<1>(batch_size, layout_cols, output_cols);
+      break;
+    case 2:
+      CheckUnpackWidth<2>(batch_size, layout_cols, output_cols);
+      break;
+    case 4:
+      CheckUnpackWidth<4>(batch_size, layout_cols, output_cols);
+      break;
+    default:
+      FAIL() << "unsupported 4bit unpack width";
   }
 }
 
 INSTANTIATE_TEST_SUITE_P(RunUnpackTests, RunUnpackTests,
                          ::testing::ValuesIn({
-                             std::make_tuple(1, 8, 5),
-                             std::make_tuple(3, 4, 4),
+                             std::make_tuple(1, 1, 8, 5),
+                             std::make_tuple(1, 3, 4, 4),
+                             std::make_tuple(2, 4, 8, 5),
+                             std::make_tuple(4, 4, 8, 5),
                          }));
 
 class RunKernelTests
@@ -502,7 +523,8 @@ TEST_P(RunKernelTests, RunKernelTests) {
 
   index = 0;
   switch (rhs_width) {
-#if defined(FC_4BIT_NEON) && defined(__aarch64__)
+#if (defined(FC_4BIT_NEON) && defined(__aarch64__)) || \
+    (defined(FC_4BIT_RVV) && defined(__riscv_vector))
     case 4:
       optimized_4bit::RunKernel<optimized_4bit::FilterWidth, 4,
                                 optimized_4bit::FilterDepth>(
@@ -543,7 +565,8 @@ INSTANTIATE_TEST_SUITE_P(
           std::make_tuple(1, 8, 1, 64), std::make_tuple(1, 16, 1, 64),
           std::make_tuple(1, 4, 5, 64), std::make_tuple(1, 8, 9, 64),
           std::make_tuple(1, 16, 17, 64),
-#if defined(FC_4BIT_NEON) && defined(__aarch64__)
+#if (defined(FC_4BIT_NEON) && defined(__aarch64__)) || \
+    (defined(FC_4BIT_RVV) && defined(__riscv_vector))
           std::make_tuple(2, 8, 2, 32), std::make_tuple(2, 16, 2, 32),
           std::make_tuple(2, 4, 4, 64), std::make_tuple(2, 8, 4, 64),
           std::make_tuple(2, 16, 4, 64), std::make_tuple(2, 4, 4, 64),

@@ -20,7 +20,9 @@ limitations under the License.
 
 #include <gtest/gtest.h>
 #include "tflite/core/interpreter.h"
+#if !defined(TFLITE_WITHOUT_XNNPACK)
 #include "tflite/delegates/xnnpack/xnnpack_delegate.h"
+#endif
 #include "tflite/kernels/internal/tensor_ctypes.h"
 #include "tflite/kernels/subgraph_test_util.h"
 #include "tflite/profiling/memory_info.h"
@@ -38,6 +40,7 @@ namespace {
 
 class WhileTest : public ControlFlowOpTest {};
 
+#if !defined(TFLITE_WITHOUT_XNNPACK)
 TEST_F(WhileTest, TestWithXNNPACK) {
   interpreter_ = std::make_unique<Interpreter>();
   AddSubgraphs(2);
@@ -76,6 +79,7 @@ TEST_F(WhileTest, TestWithXNNPACK) {
   ASSERT_EQ(interpreter_->Invoke(), kTfLiteOk);
   ASSERT_EQ(interpreter_->Invoke(), kTfLiteOk);
 }
+#endif
 
 TEST_F(WhileTest, TestInputIsOutput) {
   interpreter_ = std::make_unique<Interpreter>();

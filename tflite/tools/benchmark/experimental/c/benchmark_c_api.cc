@@ -19,11 +19,20 @@ limitations under the License.
 #include <memory>
 #include <utility>
 
-#include "xla/tsl/util/stats_calculator.h"
 #include "tflite/c/c_api_types.h"
 #include "tflite/tools/benchmark/benchmark_model.h"
 #include "tflite/tools/benchmark/benchmark_params.h"
 #include "tflite/tools/benchmark/benchmark_tflite_model.h"
+
+template <typename StatType>
+TfLiteBenchmarkInt64Stat ConvertStat(const StatType& stat) {
+  return {
+      stat.empty(),    stat.first(), stat.newest(),        stat.max(),
+      stat.min(),      stat.count(), stat.sum(),           stat.squared_sum(),
+      stat.all_same(), stat.avg(),
+      stat.empty() ? 0 : static_cast<int64_t>(stat.std_deviation()),
+  };
+}
 
 extern "C" {
 
@@ -33,15 +42,6 @@ extern "C" {
 struct TfLiteBenchmarkResults {
   const tflite::benchmark::BenchmarkResults* results;
 };
-
-// Converts the given int64_t stat into a TfLiteBenchmarkInt64Stat struct.
-TfLiteBenchmarkInt64Stat ConvertStat(const tsl::Stat<int64_t>& stat) {
-  return {
-      stat.empty(),    stat.first(), stat.newest(),        stat.max(),
-      stat.min(),      stat.count(), stat.sum(),           stat.squared_sum(),
-      stat.all_same(), stat.avg(),   stat.std_deviation(),
-  };
-}
 
 TfLiteBenchmarkInt64Stat TfLiteBenchmarkResultsGetInferenceTimeMicroseconds(
     const TfLiteBenchmarkResults* results) {

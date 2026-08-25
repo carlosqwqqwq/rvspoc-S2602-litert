@@ -123,6 +123,13 @@ config_setting(
     ],
 )
 
+config_setting(
+    name = "riscv64",
+    constraint_values = [
+        "@platforms//cpu:riscv64",
+    ],
+)
+
 selects.config_setting_group(
     name = "x86_any",
     match_any = [
@@ -215,6 +222,8 @@ cc_library(
         "optimized/optimized_ops_utils.h",
         "optimized/reduce.h",
         "optimized/resize_bilinear.h",
+        "optimized/rvv_optimized_ops.h",
+        "optimized/rvv_tensor_utils.h",
         "optimized/sparse_ops/fully_connected.h",
         "reduce_common.h",
     ],
@@ -368,6 +377,18 @@ cc_test(
     deps = [
         ":common",
         ":optimized_4bit",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "rvv_entry_coverage_test",
+    srcs = ["optimized/rvv_entry_coverage_test.cc"],
+    deps = [
+        ":common",
+        ":optimized_base",
+        ":reference_base",
+        "//tflite/kernels:cpu_backend_context",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -826,10 +847,12 @@ cc_library(
     name = "neon_tensor_utils",
     srcs = [
         "optimized/neon_tensor_utils.cc",
+        "optimized/rvv_tensor_utils.cc",
     ],
     hdrs = [
         "optimized/neon_tensor_utils.h",
         "optimized/neon_tensor_utils_impl.h",
+        "optimized/rvv_tensor_utils.h",
     ],
     compatible_with = get_compatible_with_portable(),
     copts = tflite_copts() + NEON_FLAGS_IF_APPLICABLE + HARD_FP_FLAGS_IF_APPLICABLE,
@@ -954,6 +977,9 @@ cc_library(
             ":sse_tensor_utils",
         ],
         (
+            ":riscv64",
+        ): [":neon_tensor_utils"],
+        (
             "//tflite:tf_lite_static_memory",
             "//conditions:default",
         ): [":portable_tensor_utils"],
@@ -989,6 +1015,9 @@ cc_library(
             ":portable_tensor_utils",  # If SSSE3 isn't available, we fall back to portable
             ":sse_tensor_utils",
         ],
+        (
+            ":riscv64",
+        ): [":neon_tensor_utils"],
         (
             "//tflite:tf_lite_static_memory",
             "//conditions:default",

@@ -20,6 +20,12 @@ populate_source_vars("${TFLITE_SOURCE_DIR}/tools/benchmark"
   TFLITE_BENCHMARK_SRCS
   FILTER "(_test|_plus_flex_main|_performance_options.*)\\.cc$"
 )
+# MinGW's PE linker does not treat the weak default in register_custom_op.cc
+# as an override of the same default in benchmark_tflite_model.cc. The source
+# is only an optional selected-ops hook, so omit it for the normal MinGW tool.
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  list(FILTER TFLITE_BENCHMARK_SRCS EXCLUDE REGEX ".*/register_custom_op\\.cc$")
+endif()
 list(APPEND TFLITE_BENCHMARK_SRCS
   ${XLA_SOURCE_DIR}/xla/tsl/util/stats_calculator.cc
   ${TFLITE_SOURCE_DIR}/kernels/internal/utils/sparsity_format_converter.cc

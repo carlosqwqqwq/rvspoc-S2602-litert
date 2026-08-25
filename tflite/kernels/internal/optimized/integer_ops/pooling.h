@@ -25,6 +25,7 @@ limitations under the License.
 #include "tflite/kernels/internal/optimized/cpu_check.h"
 #include "tflite/kernels/internal/optimized/im2col_utils.h"
 #include "tflite/kernels/internal/optimized/neon_check.h"
+#include "tflite/kernels/internal/optimized/rvv_optimized_ops.h"
 #include "tflite/kernels/internal/quantization_util.h"
 #include "tflite/kernels/internal/reference/reference_ops.h"
 #include "tflite/kernels/internal/strided_slice_logic.h"
@@ -58,6 +59,18 @@ inline void MaxPool(const PoolParams& params, const RuntimeShape& input_shape,
   const int output_width = output_shape.Dims(2);
   const int stride_height = params.stride_height;
   const int stride_width = params.stride_width;
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MaxPoolChannels<int8_t>(
+      input_data, output_data, depth, input_height, input_width, output_height,
+      output_width, stride_height, stride_width, params.filter_height,
+      params.filter_width, params.padding_values.height,
+      params.padding_values.width, batches,
+      static_cast<int8_t>(params.quantized_activation_min),
+      static_cast<int8_t>(params.quantized_activation_min),
+      static_cast<int8_t>(params.quantized_activation_max));
+  return;
+#endif
 
   int8_t acc[kPoolingAccTrancheSize];
   for (int batch = 0; batch < batches; ++batch) {
@@ -169,6 +182,15 @@ inline bool AveragePool(const PoolParams& params,
   const int output_width = output_shape.Dims(2);
   const int stride_height = params.stride_height;
   const int stride_width = params.stride_width;
+
+#if defined(__riscv_vector)
+  return rvv_optimized_ops::AveragePoolInt8(
+      input_data, output_data, depth, input_height, input_width, output_height,
+      output_width, stride_height, stride_width, params.filter_height,
+      params.filter_width, params.padding_values.height,
+      params.padding_values.width, batches,
+      params.quantized_activation_min, params.quantized_activation_max);
+#endif
 
   int32_t acc[kPoolingAccTrancheSize];
   for (int batch = 0; batch < batches; ++batch) {

@@ -19,6 +19,7 @@ limitations under the License.
 
 #include "ruy/profiler/instrumentation.h"  // from @ruy
 #include "tflite/kernels/internal/optimized/cpu_check.h"
+#include "tflite/kernels/internal/optimized/rvv_optimized_ops.h"
 #include "tflite/kernels/internal/types.h"
 
 namespace tflite {
@@ -884,6 +885,10 @@ inline void DepthwiseConvInitAccBuffer(int num_output_pixels, int output_depth,
   // TODO(benoitjacob): This might need optimized specializations
   // for small output_depth values, if that ever becomes an important
   // case (like it was for some quantized DepthwiseConv cases).
+  if (bias_data == nullptr) {
+    std::fill(acc_buffer, acc_buffer + num_output_pixels * output_depth, 0.0f);
+    return;
+  }
   for (int i = 0; i < num_output_pixels; i++) {
     memcpy(acc_buffer + i * output_depth, bias_data,
            sizeof(acc_buffer[0]) * output_depth);
@@ -933,6 +938,17 @@ inline void DepthwiseConvImpl(
   const int output_width = output_shape.Dims(2);
   TFLITE_DCHECK_EQ(output_depth, input_depth * depth_multiplier);
   TFLITE_DCHECK_EQ(bias_shape.FlatSize(), output_depth);
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::DepthwiseConvFloat(
+      input_data, filter_data, bias_data, output_data, batches, input_height,
+      input_width, input_depth, filter_height, filter_width, output_height,
+      output_width, output_depth, depth_multiplier, stride_height, stride_width,
+      pad_height, pad_width, dilation_height_factor, dilation_width_factor,
+      output_activation_min, output_activation_max, thread_start, thread_end,
+      thread_dim);
+  return;
+#endif
 
   static const int kAccBufferMaxSize = 4832;
   float acc_buffer[kAccBufferMaxSize];

@@ -34,6 +34,10 @@ limitations under the License.
 #include "tflite/kernels/internal/tensor_utils.h"
 #include "tflite/kernels/internal/types.h"
 
+#if defined(__riscv_vector)
+#include <riscv_vector.h>
+#endif
+
 namespace tflite {
 namespace optimized_ops {
 namespace resize_bilinear {
@@ -1226,7 +1230,20 @@ inline void ResizeBilinear888Uint8(int32_t batches, int32_t input_height,
 
 }  // namespace resize_bilinear
 
-#ifdef USE_NEON
+#if defined(__riscv_vector)
+inline void ResizeBilinearKernel(const float* input_ptr, int32_t depth,
+                                 float scale, float* output_ptr) {
+  int channel = 0;
+  while (channel < depth) {
+    const size_t vl = __riscv_vsetvl_e32m1(depth - channel);
+    vfloat32m1_t output = __riscv_vle32_v_f32m1(output_ptr + channel, vl);
+    output = __riscv_vfmacc_vf_f32m1(
+        output, scale, __riscv_vle32_v_f32m1(input_ptr + channel, vl), vl);
+    __riscv_vse32_v_f32m1(output_ptr + channel, output, vl);
+    channel += static_cast<int>(vl);
+  }
+}
+#elif defined(USE_NEON)
 inline void ResizeBilinearKernel(const float* input_ptr, int32_t depth,
                                  float scale, float* output_ptr) {
   int ic = 0;
@@ -1340,7 +1357,44 @@ inline void ResizeBilinearKernel2x2(int32_t x0, int32_t x1, int32_t y0,
   const int32_t output_x_offset = depth;
   const int32_t output_y_offset = depth * output_width;
 
-#ifdef USE_NEON
+#if defined(__riscv_vector)
+  TFLITE_DCHECK(x1 >= x0);
+  TFLITE_DCHECK(y1 >= y0);
+  int channel = 0;
+  while (channel < depth) {
+    const size_t vl = __riscv_vsetvl_e32m1(depth - channel);
+    const float* input_ptr =
+        &input_data[Offset(input_shape, batch, y0, x0, channel)];
+    const vfloat32m1_t x0y0 = __riscv_vle32_v_f32m1(input_ptr, vl);
+    const vfloat32m1_t x1y0 =
+        __riscv_vle32_v_f32m1(input_ptr + input_x_offset, vl);
+    const vfloat32m1_t x0y1 =
+        __riscv_vle32_v_f32m1(input_ptr + input_y_offset, vl);
+    const vfloat32m1_t x1y1 = __riscv_vle32_v_f32m1(
+        input_ptr + input_x_offset + input_y_offset, vl);
+    float* output_ptr =
+        &output_data[Offset(output_shape, batch, y, x, channel)];
+    __riscv_vse32_v_f32m1(output_ptr, x0y0, vl);
+    __riscv_vse32_v_f32m1(output_ptr + output_x_offset,
+                          __riscv_vfmul_vf_f32m1(
+                              __riscv_vfadd_vv_f32m1(x0y0, x1y0, vl), 0.5f,
+                              vl),
+                          vl);
+    const vfloat32m1_t bottom_left = __riscv_vfmul_vf_f32m1(
+        __riscv_vfadd_vv_f32m1(x0y0, x0y1, vl), 0.5f, vl);
+    __riscv_vse32_v_f32m1(output_ptr + output_y_offset, bottom_left, vl);
+    const vfloat32m1_t bottom_right = __riscv_vfmul_vf_f32m1(
+        __riscv_vfadd_vv_f32m1(bottom_left,
+                               __riscv_vfmul_vf_f32m1(
+                                   __riscv_vfadd_vv_f32m1(x1y0, x1y1, vl),
+                                   0.5f, vl),
+                               vl),
+        0.5f, vl);
+    __riscv_vse32_v_f32m1(output_ptr + output_x_offset + output_y_offset,
+                          bottom_right, vl);
+    channel += static_cast<int>(vl);
+  }
+#elif defined(USE_NEON)
   TFLITE_DCHECK(x1 >= x0);
   TFLITE_DCHECK(y1 >= y0);
 

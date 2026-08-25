@@ -24,6 +24,7 @@ limitations under the License.
 #include "tflite/kernels/internal/optimized/cpu_check.h"
 #include "tflite/kernels/internal/optimized/neon_check.h"
 #include "tflite/kernels/internal/optimized/optimized_ops.h"
+#include "tflite/kernels/internal/optimized/rvv_optimized_ops.h"
 #include "tflite/kernels/internal/reference/integer_ops/mul.h"
 #include "tflite/kernels/internal/types.h"
 
@@ -43,6 +44,14 @@ inline void MulElementwise(int size, const ArithmeticParams& params,
   TFLITE_DCHECK_LT(params.input2_offset, 256);
   TFLITE_DCHECK_GT(params.output_offset, -256);
   TFLITE_DCHECK_LT(params.output_offset, 256);
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MulInt8(
+      input1_data, input2_data, output_data, size, params.input1_offset,
+      params.input2_offset, params.output_multiplier, params.output_shift,
+      params.output_offset, params.quantized_activation_min,
+      params.quantized_activation_max);
+  return;
+#endif
 #ifdef USE_NEON
   const int16x8_t input1_offset_vector = vdupq_n_s16(params.input1_offset);
   const int16x8_t input2_offset_vector = vdupq_n_s16(params.input2_offset);
@@ -151,6 +160,14 @@ inline void MulSimpleBroadcast(int size, const ArithmeticParams& params,
   TFLITE_DCHECK_LT(params.input2_offset, 256);
   TFLITE_DCHECK_GT(params.output_offset, -256);
   TFLITE_DCHECK_LT(params.output_offset, 256);
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MulScalarInt8(
+      input2_data, broadcast_value, output_data, size, params.input1_offset,
+      params.input2_offset, params.output_multiplier, params.output_shift,
+      params.output_offset, params.quantized_activation_min,
+      params.quantized_activation_max);
+  return;
+#endif
 #ifdef USE_NEON
   const auto input2_offset_vector = vdupq_n_s16(params.input2_offset);
   const auto output_offset_vector = vdupq_n_s16(params.output_offset);

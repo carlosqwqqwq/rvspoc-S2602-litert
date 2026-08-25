@@ -117,7 +117,7 @@ TfLiteRegistration* Register_DEQUANTIZE_REF() {
 }
 
 TfLiteRegistration* Register_DEQUANTIZE() {
-#ifdef USE_NEON
+#if defined(USE_NEON) || defined(USE_RVV)
   return Register_DEQUANTIZE_OPT();
 #else
   return Register_DEQUANTIZE_REF();

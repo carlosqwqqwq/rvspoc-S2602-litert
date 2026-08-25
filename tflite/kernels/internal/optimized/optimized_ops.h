@@ -54,8 +54,12 @@ limitations under the License.
 #include "tflite/kernels/internal/cppmath.h"
 #include "tflite/kernels/internal/optimized/im2col_utils.h"
 #include "tflite/kernels/internal/optimized/neon_check.h"
-#include "tflite/kernels/internal/optimized/optimized_ops_utils.h"
 #include "tflite/kernels/internal/quantization_util.h"
+#include "tflite/kernels/internal/optimized/optimized_ops_utils.h"
+#include "tflite/kernels/internal/optimized/rvv_optimized_ops.h"
+#if defined(__riscv_vector)
+#include "tflite/kernels/internal/optimized/rvv_tensor_utils.h"
+#endif
 #include "tflite/kernels/internal/reference/reference_ops.h"
 #include "tflite/kernels/internal/strided_slice_logic.h"
 #include "tflite/kernels/internal/tensor.h"
@@ -445,6 +449,13 @@ inline void ShuffledFullyConnectedWorkerImpl(
     const int8_t* shuffled_weights_data, int batches, int output_depth,
     int output_stride, int accum_depth, const int32_t* bias_data,
     int32_t output_multiplier, int output_shift, int16_t* output_data) {
+#if defined(__riscv_vector)
+  rvv_optimized_ops::ShuffledFullyConnectedWorker(
+      shuffled_input_workspace_data, shuffled_weights_data, batches,
+      output_depth, output_stride, accum_depth, bias_data, output_multiplier,
+      output_shift, output_data);
+  return;
+#endif
 #if defined USE_NEON
   const int8_t* shuffled_weights_ptr = shuffled_weights_data;
   if (batches == 1) {
@@ -502,7 +513,8 @@ inline void ShuffledFullyConnectedWorkerImpl(
           vpadd_s32(pairwise_reduced_acc_2, pairwise_reduced_acc_3);
       int32x4_t reduced = vcombine_s32(reduced_lo, reduced_hi);
       // Add bias values.
-      int32x4_t bias_vec = vld1q_s32(bias_data + c);
+      int32x4_t bias_vec =
+          bias_data ? vld1q_s32(bias_data + c) : vdupq_n_s32(0);
       reduced = vaddq_s32(reduced, bias_vec);
       reduced = vshlq_s32(reduced, vdupq_n_s32(left_shift));
       // Multiply by the fixed-point multiplier.
@@ -642,7 +654,7 @@ inline void ShuffledFullyConnectedWorkerImpl(
       }
       for (int i = 0; i < 4; i++) {
         // Add bias value
-        int acc = accum[i] + bias_data[c + i];
+        int acc = accum[i] + (bias_data ? bias_data[c + i] : 0);
         // Down-scale the final int32_t accumulator to the scale used by our
         // (16-bit, typically 3 integer bits) fixed-point format. The quantized
         // multiplier and shift here have been pre-computed offline
@@ -693,7 +705,7 @@ inline void ShuffledFullyConnectedWorkerImpl(
       for (int i = 0; i < 4; i++) {
         for (int b = 0; b < 4; b++) {
           // Add bias value
-          int acc = accum[i][b] + bias_data[c + i];
+          int acc = accum[i][b] + (bias_data ? bias_data[c + i] : 0);
           // Down-scale the final int32_t accumulator to the scale used by our
           // (16-bit, typically 3 integer bits) fixed-point format. The
           // quantized multiplier and shift here have been pre-computed offline
@@ -846,6 +858,14 @@ inline void ShuffledFullyConnected(
     return;
   }
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::ShuffledFullyConnectedWorker(
+      shuffled_input_workspace_data, int8_shuffled_weights_data, batches,
+      output_depth, output_depth, accum_depth, bias_data, output_multiplier,
+      output_shift, output_data);
+  return;
+#endif
+
   static constexpr int kKernelRows = 4;
   const int thread_count =
       LegacyHowManyThreads<kKernelRows>(cpu_backend_context->max_num_threads(),
@@ -874,7 +894,8 @@ inline void ShuffledFullyConnected(
     tasks.emplace_back(shuffled_input_workspace_data,
                        int8_shuffled_weights_data + row_start * accum_depth,
                        batches, row_end - row_start, output_depth, accum_depth,
-                       bias_data + row_start, output_multiplier, output_shift,
+                       bias_data ? bias_data + row_start : nullptr,
+                       output_multiplier, output_shift,
                        output_data + row_start);
     row_start = row_end;
   }
@@ -1478,6 +1499,13 @@ inline void AddElementwise(int size, const ArithmeticParams& params,
                            float* output_data) {
   int i = 0;
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::AddFloat(input1_data, input2_data, output_data, size,
+                              params.float_activation_min,
+                              params.float_activation_max);
+  return;
+#endif
+
 #ifdef USE_NEON
   const auto activation_min = vdupq_n_f32(params.float_activation_min);
   const auto activation_max = vdupq_n_f32(params.float_activation_max);
@@ -1541,6 +1569,15 @@ inline void AddElementwise(int size, const ArithmeticParams& params,
                            const uint8_t* input2_data, uint8_t* output_data) {
   ruy::profiler::ScopeLabel label("AddElementwise/8bit");
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::QuantizedBinaryUint8<false>(
+      input1_data, input2_data, output_data, size, params.input1_offset,
+      params.input2_offset, params.left_shift, params.input1_multiplier,
+      params.input1_shift, params.input2_multiplier, params.input2_shift,
+      params.output_multiplier, params.output_shift, params.output_offset,
+      params.quantized_activation_min, params.quantized_activation_max);
+  return;
+#endif
   TFLITE_DCHECK_GT(params.input1_offset, -256);
   TFLITE_DCHECK_GT(params.input2_offset, -256);
   TFLITE_DCHECK_LT(params.input1_offset, 256);
@@ -1641,6 +1678,16 @@ inline void AddScalarBroadcast(int size, const ArithmeticParams& params,
 
   int i = 0;
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::AddScalarUint8(
+      size, input1_data, input2_data, output_data, params.input1_offset,
+      params.input2_offset, params.left_shift, params.input1_multiplier,
+      params.input1_shift, params.input2_multiplier, params.input2_shift,
+      params.output_multiplier, params.output_shift, params.output_offset,
+      params.quantized_activation_min, params.quantized_activation_max);
+  return;
+#endif
+
 #ifdef USE_NEON
   const int32x4_t left_shift_dup = vdupq_n_s32(params.left_shift);
   const uint8x8_t output_activation_min_vector =
@@ -1735,6 +1782,12 @@ inline void AddScalarBroadcast(int size, const ArithmeticParams& params,
                                float broadcast_value, const float* input2_data,
                                float* output_data) {
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::AddScalarFloat(
+      input2_data, broadcast_value, output_data, size,
+      params.float_activation_min, params.float_activation_max);
+  return;
+#endif
 #ifdef USE_NEON
   const float32x4_t output_activation_min_vector =
       vdupq_n_f32(params.float_activation_min);
@@ -1900,6 +1953,11 @@ inline void MulElementwise(int size, const ArithmeticParams& params,
   const float output_activation_max = params.float_activation_max;
 
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MulFloat(input1_data, input2_data, output_data, size,
+                              output_activation_min, output_activation_max);
+  return;
+#endif
 #ifdef USE_NEON
   const auto activation_min = vdupq_n_f32(output_activation_min);
   const auto activation_max = vdupq_n_f32(output_activation_max);
@@ -1958,6 +2016,12 @@ inline void MulElementwise(int32_t n, const ArithmeticParams& params,
   const int32_t activation_max_val = params.quantized_activation_max;
 
   int32_t i = 0;
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MulInt32(lhs, rhs, out, n, activation_min_val,
+                              activation_max_val);
+  return;
+#endif
 
 #ifdef USE_NEON
   const int32x4_t activation_min = vdupq_n_s32(activation_min_val);
@@ -2115,6 +2179,14 @@ inline void MulElementwise(int size, const ArithmeticParams& params,
                            const uint8_t* input1_data,
                            const uint8_t* input2_data, uint8_t* output_data) {
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MulUint8(
+      input1_data, input2_data, output_data, size, params.input1_offset,
+      params.input2_offset, params.output_multiplier, params.output_shift,
+      params.output_offset, params.quantized_activation_min,
+      params.quantized_activation_max);
+  return;
+#endif
   TFLITE_DCHECK_GT(params.input1_offset, -256);
   TFLITE_DCHECK_LT(params.input1_offset, 256);
   TFLITE_DCHECK_GT(params.input2_offset, -256);
@@ -2193,6 +2265,14 @@ inline void MulSimpleBroadcast(int size, const ArithmeticParams& params,
   const int16_t input1_val = params.input1_offset + broadcast_value;
 
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MulScalarUint8(
+      input2_data, broadcast_value, output_data, size, params.input1_offset,
+      params.input2_offset, params.output_multiplier, params.output_shift,
+      params.output_offset, params.quantized_activation_min,
+      params.quantized_activation_max);
+  return;
+#endif
   TFLITE_DCHECK_GT(params.input1_offset, -256);
   TFLITE_DCHECK_LT(params.input1_offset, 256);
   TFLITE_DCHECK_GT(params.input2_offset, -256);
@@ -2262,6 +2342,12 @@ inline void MulSimpleBroadcast(int size, const ArithmeticParams& params,
                                const float broadcast_value,
                                const float* input2_data, float* output_data) {
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MulScalarFloat(
+      input2_data, broadcast_value, output_data, size,
+      params.float_activation_min, params.float_activation_max);
+  return;
+#endif
 #ifdef USE_NEON
   const float32x4_t output_activation_min_vector =
       vdupq_n_f32(params.float_activation_min);
@@ -2801,6 +2887,13 @@ inline void LstmCell(
       lhs_params, weights_data_uint8, rhs_params, concat_temp_data_uint8,
       dst_params, activ_temp_data_int16, gemm_params, cpu_backend_context);
 
+#if defined(__riscv_vector)
+  tensor_utils::RvvLstmCellQuantized(
+      activ_temp_data_int16, prev_state_data_int16, outer_size, output_depth,
+      StateIntegerBits, output_state_data_int16, output_activ_data_uint8);
+  return;
+#endif
+
   // Rest of the LSTM cell: tanh and logistic math functions, and some adds
   // and muls, all done in 16-bit fixed-point.
   const int16_t* input_gate_input_ptr = activ_temp_data_int16;
@@ -3061,6 +3154,15 @@ inline bool AveragePool(const PoolParams& params,
   const int stride_height = params.stride_height;
   const int stride_width = params.stride_width;
 
+#if defined(__riscv_vector)
+  return rvv_optimized_ops::AveragePoolUint8(
+      input_data, output_data, depth, input_height, input_width, output_height,
+      output_width, stride_height, stride_width, params.filter_height,
+      params.filter_width, params.padding_values.height,
+      params.padding_values.width, batches,
+      params.quantized_activation_min, params.quantized_activation_max);
+#endif
+
   uint32_t acc[kPoolingAccTrancheSize];
   for (int batch = 0; batch < batches; ++batch) {
     // We proceed through the depth in tranches (see comment above). The
@@ -3188,6 +3290,17 @@ inline void MaxPool(const PoolParams& params, const RuntimeShape& input_shape,
   const int stride_height = params.stride_height;
   const int stride_width = params.stride_width;
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MaxPoolChannels<float>(
+      input_data, output_data, MatchingDim(input_shape, 3, output_shape, 3),
+      input_height, input_width, output_height, output_width, stride_height,
+      stride_width, params.filter_height, params.filter_width,
+      params.padding_values.height, params.padding_values.width, batches,
+      std::numeric_limits<float>::lowest(), params.float_activation_min,
+      params.float_activation_max);
+  return;
+#endif
+
   const auto in_mat = MapAsMatrixWithLastDimAsRows(input_data, input_shape);
   auto out_mat = MapAsMatrixWithLastDimAsRows(output_data, output_shape);
   // Prefill the output to minimum representable float value
@@ -3252,6 +3365,17 @@ inline void MaxPool(const PoolParams& params, const RuntimeShape& input_shape,
   const int output_width = output_shape.Dims(2);
   const int stride_height = params.stride_height;
   const int stride_width = params.stride_width;
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MaxPoolChannels<uint8_t>(
+      input_data, output_data, depth, input_height, input_width, output_height,
+      output_width, stride_height, stride_width, params.filter_height,
+      params.filter_width, params.padding_values.height,
+      params.padding_values.width, batches, static_cast<uint8_t>(0),
+      static_cast<uint8_t>(params.quantized_activation_min),
+      static_cast<uint8_t>(params.quantized_activation_max));
+  return;
+#endif
 
   uint8_t acc[kPoolingAccTrancheSize];
   for (int batch = 0; batch < batches; ++batch) {
@@ -3573,6 +3697,22 @@ inline void Softmax(const SoftmaxParams& params,
       MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
   const int last_dim =
       MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
+
+#if defined(__riscv_vector) && defined(TFLITE_RVV_ENABLE_SOFTMAX_LUT)
+  // The RVV LUT path is the default RV64GCV configuration and has been
+  // validated at VLEN=128/256/512. Configure
+  // -DTFLITE_RVV_ENABLE_SOFTMAX_LUT=OFF to select the portable fallback.
+  if constexpr ((std::is_same_v<In, int8_t> ||
+                 std::is_same_v<In, uint8_t>) &&
+                (std::is_same_v<Out, int8_t> ||
+                 std::is_same_v<Out, uint8_t>)) {
+    rvv_optimized_ops::SoftmaxInt8Lut(
+        input_data, output_data, excluding_last_dim, last_dim,
+        params.uint8_table1, params.uint8_table2, params.scale,
+        params.zero_point);
+    return;
+  }
+#endif
 
   const int32_t clamp_max = std::numeric_limits<Out>::max();
   const int32_t clamp_min = std::numeric_limits<Out>::min();
@@ -3975,6 +4115,13 @@ template <typename T>
 inline void Logistic(const RuntimeShape& input_shape, const T* input_data,
                      const RuntimeShape& output_shape, T* output_data) {
   ruy::profiler::ScopeLabel label("Logistic");
+#if defined(__riscv_vector)
+  if constexpr (std::is_same_v<T, float>) {
+    const int flat_size = MatchingFlatSize(input_shape, output_shape);
+    rvv_optimized_ops::RvvLogisticFloat(input_data, output_data, flat_size);
+    return;
+  }
+#endif
   auto input_map = MapAsVector(input_data, input_shape);
   auto output_map = MapAsVector(output_data, output_shape);
   output_map.array() =
@@ -3986,6 +4133,11 @@ inline void Logistic(const RuntimeShape& input_shape, const T* input_data,
 inline void Logistic(const LogisticParams&, const RuntimeShape& input_shape,
                      const float* input_data, const RuntimeShape& output_shape,
                      float* output_data) {
+  const int flat_size = MatchingFlatSize(input_shape, output_shape);
+#if defined(__riscv_vector)
+  rvv_optimized_ops::RvvLogisticFloat(input_data, output_data, flat_size);
+  return;
+#endif
   // Drop params: not needed.
   Logistic(input_shape, input_data, output_shape, output_data);
 }
@@ -3995,6 +4147,11 @@ inline void Logistic(const LogisticParams& params,
                      const RuntimeShape& output_shape, int16_t* output_data) {
   ruy::profiler::ScopeLabel label("Logistic/Int16");
   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+
+#if defined(__riscv_vector)
+  tensor_utils::RvvApplySigmoid(input_data, 1, flat_size, output_data);
+  return;
+#endif
 
   for (int i = 0; i < flat_size; i++) {
   }
@@ -4115,6 +4272,13 @@ inline void Tanh(const TanhParams& params, const RuntimeShape& input_shape,
   TFLITE_DCHECK_LE(input_left_shift, 1);
 
   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+
+#if defined(__riscv_vector)
+  tensor_utils::RvvApplyTanhWithInputLeftShift(
+      /*integer_bits=*/3, input_left_shift, input_data, 1, flat_size,
+      output_data);
+  return;
+#endif
 
   int c = 0;
   const int16_t* input_data_ptr = input_data;
@@ -5131,6 +5295,13 @@ inline void Quantize(int32_t multiplier, int32_t shift, int32_t total_size,
   ruy::profiler::ScopeLabel label("Quantize/uint8_t");
   int i = 0;
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::QuantizeUniform(
+      scratch, total_size, multiplier, shift, output_zp, output_min, output_max,
+      output);
+  return;
+#endif
+
 #ifdef USE_NEON
   const int32x4_t output_zp_dup = vdupq_n_s32(output_zp);
   const int32x4_t max_val_dup = vdupq_n_s32(output_max);
@@ -5194,6 +5365,13 @@ inline void Quantize(const int32_t* multiplier, const int32_t* shift,
                      int32_t output_zp, int32_t output_min, int32_t output_max,
                      int32_t* scratch, int8_t* output) {
   ruy::profiler::ScopeLabel label("Quantize/int8_t");
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::QuantizePerChannel(
+      multiplier, shift, channel_size, total_size, output_zp, output_min,
+      output_max, scratch, output);
+  return;
+#endif
 
   // Here we're trying to quantize the raw accumulators:
   //        output_channels
@@ -5285,6 +5463,13 @@ inline void Quantize(const int32_t* multiplier, const int32_t* shift,
                      int32_t* scratch, int16_t* output) {
   ruy::profiler::ScopeLabel label("Quantize(Single-rounding)/int16_t");
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::QuantizePerChannel(
+      multiplier, shift, channel_size, total_size, output_zp, output_min,
+      output_max, scratch, output);
+  return;
+#endif
+
   // Here we're trying to quantize the raw accumulators:
   //        output_channels
   //       data data data data data
@@ -5374,6 +5559,13 @@ inline void Quantize(const int32_t* multiplier, const int32_t* shift,
                      int32_t output_zp, int32_t output_min, int32_t output_max,
                      int32_t* scratch, int8_t* output) {
   ruy::profiler::ScopeLabel label("Quantize/int8_t");
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::QuantizePerChannel(
+      multiplier, shift, channel_size, total_size, output_zp, output_min,
+      output_max, scratch, output);
+  return;
+#endif
 
   // Here we're trying to quantize the raw accumulators:
   //        output_channels
@@ -5465,6 +5657,13 @@ inline void Quantize(const int32_t* multiplier, const int32_t* shift,
                      int32_t output_zp, int32_t output_min, int32_t output_max,
                      int32_t* scratch, int16_t* output) {
   ruy::profiler::ScopeLabel label("Quantize(Double-rounding)/int16_t");
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::QuantizePerChannel(
+      multiplier, shift, channel_size, total_size, output_zp, output_min,
+      output_max, scratch, output);
+  return;
+#endif
 
   // Here we're trying to quantize the raw accumulators:
   //        output_channels
@@ -5685,6 +5884,13 @@ inline void ResizeNearestNeighbor(
   const int row_offset = input_shape.Dims(2) * col_offset;
   const int batch_offset = input_shape.Dims(1) * row_offset;
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::RvvResizeNearestNeighbor(
+      input_data, output_data, batches, input_height, input_width,
+      output_height, output_width, depth, height_scale, width_scale);
+  return;
+#endif
+
   const uint8_t* input_ptr = input_data;
   uint8_t* output_ptr = output_data;
   for (int b = 0; b < batches; ++b) {
@@ -5715,6 +5921,18 @@ inline void ResizeNearestNeighbor(
   }
 }
 
+#if defined(__riscv_vector)
+inline void RvvResizeNearestNeighbor32(
+    const int32_t* input_data, int32_t* output_data, int32_t batches,
+    int32_t input_height, int32_t input_width, int32_t output_height,
+    int32_t output_width, int32_t depth, int32_t height_scale,
+    int32_t width_scale) {
+  rvv_optimized_ops::RvvResizeNearestNeighbor<int32_t>(
+      input_data, output_data, batches, input_height, input_width,
+      output_height, output_width, depth, height_scale, width_scale);
+}
+#endif
+
 template <typename input_type, typename output_type>
 inline void Requantize(const input_type* input_data, int32_t size,
                        int32_t effective_scale_multiplier,
@@ -5733,6 +5951,13 @@ inline void Requantize<int8_t, uint8_t>(const int8_t* input_data, int32_t size,
                                         int32_t output_zeropoint,
                                         uint8_t* output_data) {
   ruy::profiler::ScopeLabel label("Requantize/Int8ToUint8");
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::Requantize(
+      input_data, size, effective_scale_multiplier, effective_scale_shift,
+      input_zeropoint, output_zeropoint, output_data);
+  return;
+#endif
 
   static constexpr int32_t kMinOutput = std::numeric_limits<uint8_t>::min();
   static constexpr int32_t kMaxOutput = std::numeric_limits<uint8_t>::max();
@@ -5821,6 +6046,13 @@ inline void Requantize<uint8_t, int8_t>(const uint8_t* input_data, int32_t size,
                                         int8_t* output_data) {
   ruy::profiler::ScopeLabel label("Requantize/Uint8ToInt8");
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::Requantize(
+      input_data, size, effective_scale_multiplier, effective_scale_shift,
+      input_zeropoint, output_zeropoint, output_data);
+  return;
+#endif
+
   static constexpr int32_t kMinOutput = std::numeric_limits<int8_t>::min();
   static constexpr int32_t kMaxOutput = std::numeric_limits<int8_t>::max();
 
@@ -5899,6 +6131,13 @@ inline void Requantize<int8_t, int8_t>(const int8_t* input_data, int32_t size,
                                        int8_t* output_data) {
   ruy::profiler::ScopeLabel label("Requantize/Int8ToInt8");
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::Requantize(
+      input_data, size, effective_scale_multiplier, effective_scale_shift,
+      input_zeropoint, output_zeropoint, output_data);
+  return;
+#endif
+
   static constexpr int32_t kMinOutput = std::numeric_limits<int8_t>::min();
   static constexpr int32_t kMaxOutput = std::numeric_limits<int8_t>::max();
 
@@ -5975,6 +6214,13 @@ inline void Requantize<uint8_t, uint8_t>(
     int32_t effective_scale_shift, int32_t input_zeropoint,
     int32_t output_zeropoint, uint8_t* output_data) {
   ruy::profiler::ScopeLabel label("Requantize/Uint8ToUint8");
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::Requantize(
+      input_data, size, effective_scale_multiplier, effective_scale_shift,
+      input_zeropoint, output_zeropoint, output_data);
+  return;
+#endif
 
   static constexpr int32_t kMinOutput = std::numeric_limits<uint8_t>::min();
   static constexpr int32_t kMaxOutput = std::numeric_limits<uint8_t>::max();
@@ -6059,6 +6305,10 @@ inline void HardSwish(const RuntimeShape& input_shape, const float* input_data,
   ruy::profiler::ScopeLabel label("HardSwish/Float");
   auto size = MatchingFlatSize(input_shape, output_shape);
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::HardSwishFloat(input_data, output_data, size);
+  return;
+#endif
 #ifdef USE_NEON
   const float32x4_t zero = vdupq_n_f32(0.0f);
   const float32x4_t three = vdupq_n_f32(3.0f);
@@ -6137,6 +6387,16 @@ inline void HardSwish(const HardSwishParams& params,
   ruy::profiler::ScopeLabel label("HardSwish/Quantized");
 
   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::HardSwishQuantized(
+      input_data, output_data, flat_size, params.input_zero_point,
+      params.output_zero_point, params.output_multiplier_exponent,
+      params.output_multiplier_fixedpoint_int16,
+      params.reluish_multiplier_exponent,
+      params.reluish_multiplier_fixedpoint_int16);
+  return;
+#endif
 
   int i = 0;
   // This code heavily uses NEON saturating left shifts (vqshl*) with shift
@@ -6302,6 +6562,13 @@ inline void IntegerExponentPow(const ArithmeticParams& params,
                                const RuntimeShape& unextended_output_shape,
                                T* output_data) {
   TFLITE_DCHECK_GE(exponent, 1);
+#if defined(__riscv_vector)
+  if (exponent == 1) {
+    rvv_optimized_ops::VectorCopy(base_data, output_data,
+                                  unextended_base_shape.FlatSize());
+    return;
+  }
+#endif
   if (exponent == 1) {
     // copy data over.
     std::memcpy(output_data, base_data,
@@ -6376,6 +6643,12 @@ inline void Dequantize(const tflite::DequantizationParams& op_params,
   const double scale = op_params.scale;
   const int flat_size = MatchingFlatSize(input_shape, output_shape);
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::Dequantize(input_data, flat_size, zero_point,
+                                 static_cast<float>(scale), output_data);
+  return;
+#endif
+
   int i = 0;
 #ifdef USE_NEON
   const float32x4_t scale_dup = vdupq_n_f32(static_cast<float>(scale));
@@ -6416,6 +6689,12 @@ inline void Dequantize(const tflite::DequantizationParams& op_params,
   const double scale = op_params.scale;
   const int flat_size = MatchingFlatSize(input_shape, output_shape);
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::Dequantize(input_data, flat_size, zero_point,
+                                 static_cast<float>(scale), output_data);
+  return;
+#endif
+
   int i = 0;
 #ifdef USE_NEON
   const float32x4_t scale_dup = vdupq_n_f32(static_cast<float>(scale));
@@ -6454,6 +6733,12 @@ inline void Dequantize(const tflite::DequantizationParams& op_params,
   const int32_t zero_point = op_params.zero_point;
   const double scale = op_params.scale;
   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::DequantizeInt16(
+      input_data, flat_size, zero_point, static_cast<float>(scale), output_data);
+  return;
+#endif
 
   int i = 0;
 #ifdef USE_NEON
@@ -6510,6 +6795,13 @@ inline void AffineQuantize(const tflite::QuantizationParams& op_params,
   const int flat_size = MatchingFlatSize(input_shape, output_shape);
   static constexpr int32_t min_val = std::numeric_limits<int8_t>::min();
   static constexpr int32_t max_val = std::numeric_limits<int8_t>::max();
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::AffineQuantize(
+      input_data, flat_size, static_cast<float>(1.0 / scale), zero_point,
+      min_val, max_val, output_data);
+  return;
+#endif
 
   int i = 0;
 #ifdef USE_NEON
@@ -6568,6 +6860,13 @@ inline void AffineQuantize(const tflite::QuantizationParams& op_params,
   static constexpr int32_t min_val = std::numeric_limits<uint8_t>::min();
   static constexpr int32_t max_val = std::numeric_limits<uint8_t>::max();
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::AffineQuantize(
+      input_data, flat_size, static_cast<float>(1.0 / scale), zero_point,
+      min_val, max_val, output_data);
+  return;
+#endif
+
   int i = 0;
 #ifdef USE_NEON
   const float32x4_t reverse_scale_dup = vdupq_n_f32(1.0f / scale);
@@ -6625,6 +6924,13 @@ inline void AffineQuantize(const tflite::QuantizationParams& op_params,
   const int flat_size = MatchingFlatSize(input_shape, output_shape);
   static constexpr int32_t min_val = std::numeric_limits<int16_t>::min();
   static constexpr int32_t max_val = std::numeric_limits<int16_t>::max();
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::AffineQuantize(
+      input_data, flat_size, static_cast<float>(1.0 / scale), zero_point,
+      min_val, max_val, output_data);
+  return;
+#endif
 
   int i = 0;
 #ifdef USE_NEON
@@ -6830,6 +7136,13 @@ inline void Tanh16bitPrecision(const TanhParams& params,
       static_cast<int16_t>(params.input_left_shift);
   const int size = MatchingFlatSize(input_shape, output_shape);
 
+#if defined(__riscv_vector)
+  tensor_utils::RvvTanh16BitPrecisionUint8(
+      input_data, size, input_zero_point, input_range_radius, input_multiplier,
+      input_left_shift, output_data);
+  return;
+#endif
+
   int c = 0;
   int16_t output_zero_point = 128;
 
@@ -6939,6 +7252,13 @@ inline void Tanh16bitPrecision(const TanhParams& params,
       static_cast<int16_t>(params.input_left_shift);
   const int size = MatchingFlatSize(input_shape, output_shape);
 
+#if defined(__riscv_vector)
+  tensor_utils::RvvTanh16BitPrecisionInt8(
+      input_data, size, input_zero_point, input_range_radius, input_multiplier,
+      input_left_shift, output_data);
+  return;
+#endif
+
   int c = 0;
 // TODO(b/139252020): Replace GEMMLOWP_NEON with USE_NEON when the bug is fixed.
 // The converted versions of gemmlowp::tanh and gemmlowp::logistic, done by
@@ -7032,6 +7352,13 @@ inline void Logistic16bitPrecision(const LogisticParams& params,
       static_cast<int16_t>(params.input_left_shift);
   const int size = MatchingFlatSize(input_shape, output_shape);
 
+#if defined(__riscv_vector)
+  tensor_utils::RvvLogistic16BitPrecisionUint8(
+      input_data, size, input_zero_point, input_range_radius, input_multiplier,
+      input_left_shift, output_data);
+  return;
+#endif
+
   int c = 0;
 // TODO(b/139252020): Replace GEMMLOWP_NEON with USE_NEON when the bug is fixed.
 // The converted versions of gemmlowp::tanh and gemmlowp::logistic, done by
@@ -7124,6 +7451,13 @@ inline void Logistic16bitPrecision(const LogisticParams& params,
   const int16_t input_left_shift =
       static_cast<int16_t>(params.input_left_shift);
   const int size = MatchingFlatSize(input_shape, output_shape);
+
+#if defined(__riscv_vector)
+  tensor_utils::RvvLogistic16BitPrecisionInt8(
+      input_data, size, input_zero_point, input_range_radius, input_multiplier,
+      input_left_shift, output_data);
+  return;
+#endif
 
   int c = 0;
   const int16_t output_zero_point = 128;
@@ -7232,6 +7566,10 @@ inline void MaximumElementwise(int size, const ArithmeticParams& params,
                                const int8_t* input2_data, int8_t* output_data) {
   ruy::profiler::ScopeLabel label("MaximumElementwiseInt8/8bit");
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MaximumInt8(input1_data, input2_data, output_data, size);
+  return;
+#endif
 #ifdef USE_NEON
   for (; i <= size - 16; i += 16) {
     const int8x16_t input1_val_original = vld1q_s8(input1_data + i);
@@ -7255,6 +7593,12 @@ inline void MaximumScalarBroadcast(int size, const ArithmeticParams& params,
   ruy::profiler::ScopeLabel label("MaximumScalarBroadcastInt8/8bit");
   int i = 0;
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MaximumScalarInt8(input2_data, input1_data, output_data,
+                                       size);
+  return;
+#endif
+
 #ifdef USE_NEON
   const int8x16_t input1_val_original = vdupq_n_s8(input1_data);
   for (; i <= size - 16; i += 16) {
@@ -7276,6 +7620,10 @@ inline void MinimumElementwise(int size, const ArithmeticParams& params,
                                const int8_t* input2_data, int8_t* output_data) {
   ruy::profiler::ScopeLabel label("MinimumElementwiseInt8/8bit");
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MinimumInt8(input1_data, input2_data, output_data, size);
+  return;
+#endif
 #ifdef USE_NEON
   for (; i <= size - 16; i += 16) {
     const int8x16_t input1_val_original = vld1q_s8(input1_data + i);
@@ -7298,6 +7646,12 @@ inline void MinimumScalarBroadcast(int size, const ArithmeticParams& params,
                                    int8_t* output_data) {
   ruy::profiler::ScopeLabel label("MinimumScalarBroadcastInt8/8bit");
   int i = 0;
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::MinimumScalarInt8(input2_data, input1_data, output_data,
+                                       size);
+  return;
+#endif
 
 #ifdef USE_NEON
   const int8x16_t input1_val_original = vdupq_n_s8(input1_data);
@@ -7398,6 +7752,11 @@ inline void PReluScalarBroadcast(int size, const ArithmeticParams& params,
   ruy::profiler::ScopeLabel label("PreluScalarBroadcast/float");
   int i = 0;
 
+#if defined(__riscv_vector)
+  rvv_optimized_ops::PReluScalarFloat(input_data, alpha, output_data, size);
+  return;
+#endif
+
 #ifdef USE_NEON
   const float32x4_t zero_dup = vdupq_n_f32(0.0f);
   const float32x4_t alpha_dup = vdupq_n_f32(alpha);
@@ -7447,6 +7806,11 @@ inline void PReluElementWise(int flat_size, const ArithmeticParams& params,
   ruy::profiler::ScopeLabel label("PreluElementWise/float");
 
   int i = 0;
+#if defined(__riscv_vector)
+  rvv_optimized_ops::PReluElementwiseFloat(alpha_data, input_data, output_data,
+                                           flat_size);
+  return;
+#endif
 #ifdef USE_NEON
   const float32x4_t zero_dup = vdupq_n_f32(0.0f);
   for (; i <= flat_size - 16; i += 16) {
@@ -7546,6 +7910,9 @@ inline int ArgMaxVector(const T* input_data, int size) {
 
 template <>
 inline int ArgMinVector(const float* input_data, int size) {
+#if defined(__riscv_vector)
+  return rvv_optimized_ops::ArgMinFloat(input_data, size);
+#endif
   int32_t min_index = 0;
   float min_value = input_data[0];
   int32_t i = 1;
@@ -7602,6 +7969,9 @@ inline int ArgMinVector(const float* input_data, int size) {
 
 template <>
 inline int ArgMaxVector(const float* input_data, int size) {
+#if defined(__riscv_vector)
+  return rvv_optimized_ops::ArgMaxFloat(input_data, size);
+#endif
   int32_t max_index = 0;
   float max_value = input_data[0];
   int32_t i = 1;
@@ -7658,6 +8028,9 @@ inline int ArgMaxVector(const float* input_data, int size) {
 
 template <>
 inline int ArgMaxVector(const int8_t* input_data, int size) {
+#if defined(__riscv_vector)
+  return rvv_optimized_ops::ArgMaxInteger(input_data, size);
+#endif
   int32_t max_index = 0;
   int8_t max_value = input_data[0];
   int32_t i = 0;
@@ -7707,6 +8080,9 @@ inline int ArgMaxVector(const int8_t* input_data, int size) {
 
 template <>
 inline int ArgMaxVector(const uint8_t* input_data, int size) {
+#if defined(__riscv_vector)
+  return rvv_optimized_ops::ArgMaxInteger(input_data, size);
+#endif
   int32_t max_index = 0;
   uint8_t max_value = input_data[0];
   int32_t i = 0;

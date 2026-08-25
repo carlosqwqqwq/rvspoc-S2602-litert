@@ -1537,6 +1537,10 @@ inline void QuantizedDepthwiseConvAccumRowGeneric(
 inline void DepthwiseConvInitAccBuffer(int num_output_pixels, int output_depth,
                                        const int32_t* bias_data,
                                        int32_t* acc_buffer) {
+  if (bias_data == nullptr) {
+    std::fill(acc_buffer, acc_buffer + num_output_pixels * output_depth, 0);
+    return;
+  }
   int i = 0;
 #ifdef USE_NEON
   if (output_depth == 1) {
@@ -1820,6 +1824,33 @@ inline void DepthwiseConvWithRounding(
   const int input_depth = input_shape.Dims(3);
   TFLITE_DCHECK_EQ(output_depth, input_depth * depth_multiplier);
   TFLITE_DCHECK_EQ(bias_shape.FlatSize(), output_depth);
+
+#if defined(__riscv_vector)
+  const int batches = MatchingDim(input_shape, 0, output_shape, 0);
+  const long long rvv_work = static_cast<long long>(batches) *
+                             output_shape.Dims(1) * output_shape.Dims(2) *
+                             output_depth * filter_shape.Dims(1) *
+                             filter_shape.Dims(2);
+  // The RVV per-channel depthwise kernel is channel-vectorized (int8 input x
+  // int8 filter -> int32 accumulator, per-channel quantize), so large layers
+  // are beneficial on RVV. 2e7 covers every layer of all six benchmark models
+  // (the largest EfficientDet-Lite0 INT8 depthwise layer is 9.6e6 work units).
+  constexpr long long kRvvInt8DepthwiseMaxWork = 20000000;
+  if (rvv_work <= kRvvInt8DepthwiseMaxWork) {
+    rvv_optimized_ops::DepthwiseConvInt8PerChannel(
+        input_data, filter_data, bias_data, output_data, batches,
+        input_shape.Dims(1), input_shape.Dims(2), input_depth,
+        filter_shape.Dims(1), filter_shape.Dims(2), output_shape.Dims(1),
+        output_shape.Dims(2), output_depth, depth_multiplier,
+        params.stride_height, params.stride_width,
+        params.padding_values.height, params.padding_values.width,
+        dilation_height_factor, dilation_width_factor, params.input_offset,
+        params.output_offset, output_multiplier, output_shift,
+        params.quantized_activation_min, params.quantized_activation_max,
+        thread_start, thread_end, thread_dim);
+    return;
+  }
+#endif
 
 // Enable for arm64 except for the Nvidia Linux 4 Tegra (L4T) running on
 // Jetson TX-2. This compiler does not support the offsetof() macro.

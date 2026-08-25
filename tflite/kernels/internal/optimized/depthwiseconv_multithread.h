@@ -164,6 +164,15 @@ inline void DepthwiseConv(const DepthwiseParams& params,
     thread_dim = 1;
     thread_dim_size = output_height;
   }
+  // Do not enqueue empty slices when the selected dimension is small.
+  thread_count = std::min(thread_count, thread_dim_size);
+  if (thread_count == 1) {
+    DepthwiseConvImpl(params, input_shape, input_data, filter_shape,
+                      filter_data, bias_shape, bias_data, output_shape,
+                      output_data, cpu_flags, /*thread_start=*/0,
+                      /*thread_end=*/output_height, /*thread_dim=*/1);
+    return;
+  }
 
   std::vector<DepthwiseConvWorkerTask<T, TS>> tasks;
   // TODO(b/131746020) don't create new heap allocations every time.

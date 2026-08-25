@@ -17,8 +17,14 @@ limitations under the License.
 #include <cstdint>
 #include <random>
 
+#if __has_include("xla/tsl/lib/random/philox_random.h")
 #include "xla/tsl/lib/random/philox_random.h"
 #include "xla/tsl/lib/random/random_distributions_utils.h"
+#else
+// The v2.1.4-pinned TensorFlow checkout keeps these headers under TSL.
+#include "tsl/lib/random/philox_random.h"
+#include "tsl/lib/random/random_distributions_utils.h"
+#endif
 #include "tflite/core/c/builtin_op_data.h"
 #include "tflite/kernels/internal/tensor_ctypes.h"
 #include "tflite/kernels/kernel_util.h"

@@ -129,6 +129,31 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           GetTensorShape(output), GetTensorData<int16_t>(output));
     } break;
     case 32: {
+#if defined(__riscv_vector)
+      if (kernel_type == kGenericOptimized || kernel_type == kNeonOptimized) {
+        const tflite::RuntimeShape input_shape =
+            tflite::RuntimeShape::ExtendedShape(4, GetTensorShape(input));
+        const tflite::RuntimeShape output_shape =
+            tflite::RuntimeShape::ExtendedShape(4, GetTensorShape(output));
+        const int32_t batches = input_shape.Dims(0);
+        const int32_t input_height = input_shape.Dims(1);
+        const int32_t input_width = input_shape.Dims(2);
+        const int32_t depth = input_shape.Dims(3);
+        const int32_t output_height = output_shape.Dims(1);
+        const int32_t output_width = output_shape.Dims(2);
+        if (!op_params.align_corners && !op_params.half_pixel_centers) {
+          const int32_t height_scale =
+              (input_height << 16) / output_height + 1;
+          const int32_t width_scale =
+              (input_width << 16) / output_width + 1;
+          tflite::optimized_ops::RvvResizeNearestNeighbor32(
+              GetTensorData<int32_t>(input), GetTensorData<int32_t>(output),
+              batches, input_height, input_width, output_height, output_width,
+              depth, height_scale, width_scale);
+          return kTfLiteOk;
+        }
+      }
+#endif
       reference_ops::ResizeNearestNeighbor(
           op_params, GetTensorShape(input), GetTensorData<int32>(input),
           GetTensorShape(size), GetTensorData<int32>(size),

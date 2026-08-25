@@ -18,8 +18,9 @@ limitations under the License.
 
 #if defined(__SSSE3__) && !defined(TF_LITE_STATIC_MEMORY)
 #include "tflite/kernels/internal/optimized/sse_tensor_utils.h"
-#elif defined(USE_NEON) && !defined(TF_LITE_STATIC_MEMORY)
+#elif (defined(USE_NEON) || defined(USE_RVV)) && \
+    !defined(TF_LITE_STATIC_MEMORY)
 #include "tflite/kernels/internal/optimized/neon_tensor_utils.h"
 #else
 #include "tflite/kernels/internal/reference/portable_tensor_utils.h"
-#endif  // __SSSE3__ or USE_NEON
+#endif  // __SSSE3__ or USE_NEON or USE_RVV

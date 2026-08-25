@@ -21,6 +21,9 @@ limitations under the License.
 #include "tflite/kernels/cpu_backend_threadpool.h"
 #include "tflite/kernels/internal/common.h"
 #include "tflite/kernels/internal/optimized/optimized_ops.h"
+#if defined(__riscv_vector)
+#include "tflite/kernels/internal/optimized/rvv_optimized_ops.h"
+#endif
 
 namespace tflite {
 namespace optimized_integer_ops {
@@ -45,6 +48,15 @@ inline void MeanImpl(const tflite::MeanParams& op_params,
                (op_params.axis[0] == 2 && op_params.axis[1] == 1));
   TFLITE_CHECK_EQ(output_height, 1);
   TFLITE_CHECK_EQ(output_width, 1);
+
+#if defined(__riscv_vector)
+  rvv_optimized_ops::RvvMeanChannels(
+      input_data, output_batch, input_height, input_width,
+      input_shape.Dims(3), start_depth, end_depth, multiplier, shift, bias,
+      output_data, output_shape.Dims(1) * output_shape.Dims(2) *
+                       output_shape.Dims(3));
+  return;
+#endif
 
   constexpr static int32_t kMinValue = std::numeric_limits<int8_t>::min();
   constexpr static int32_t kMaxValue = std::numeric_limits<int8_t>::max();

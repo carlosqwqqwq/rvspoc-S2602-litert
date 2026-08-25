@@ -361,6 +361,167 @@ TEST(uKernels, MatrixBatchVectorMultiplyAccumulateTest) {
                                                        -1., 7., 23.})));
 }
 
+TEST(uKernels, MatrixBatchVectorMultiplyAccumulateTailTest) {
+  constexpr int kRow = 2;
+  constexpr int kCol = 11;
+  constexpr int kBatch = 2;
+  const float matrix[kRow * kCol] = {
+      1.0f,  -2.0f, 3.0f,  -4.0f, 5.0f,  -6.0f, 7.0f,  -8.0f, 9.0f,  -10.0f,
+      11.0f, -1.0f, 2.0f,  -3.0f, 4.0f,  -5.0f, 6.0f,  -7.0f, 8.0f,  -9.0f,
+      10.0f, -11.0f};
+  const float vector[kCol * kBatch] = {
+      1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+      2.0f, 2.0f, 2.0f, 2.0f, 2.0f, 2.0f, 2.0f, 2.0f, 2.0f, 2.0f, 2.0f};
+  std::vector<float> output(kRow * kBatch, 0.5f);
+
+  MatrixBatchVectorMultiplyAccumulate(matrix, kRow, kCol, vector, kBatch,
+                                      output.data());
+
+  EXPECT_THAT(output,
+              ElementsAreArray(ArrayFloatNear({6.5f, -5.5f, 12.5f, -11.5f})));
+}
+
+TEST(uKernels, VectorVectorDotProductTailTest) {
+  constexpr int kSize = 11;
+  const float vector1[kSize] = {1.0f,  -2.0f, 3.0f,  -4.0f, 5.0f,  -6.0f,
+                                7.0f,  -8.0f, 9.0f,  -10.0f, 11.0f};
+  const float vector2[kSize] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                                1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+
+  EXPECT_NEAR(VectorVectorDotProduct(vector1, vector2, kSize), 6.0f, 1e-5f);
+}
+
+TEST(uKernels, Sub1VectorTailTest) {
+  constexpr int kSize = 11;
+  const float input[kSize] = {0.0f,  0.5f, 1.0f,  1.5f, 2.0f,  2.5f,
+                              3.0f,  3.5f, 4.0f,  4.5f, 5.0f};
+  const float expected[kSize] = {1.0f,  0.5f, 0.0f,  -0.5f, -1.0f, -1.5f,
+                                 -2.0f, -2.5f, -3.0f, -3.5f, -4.0f};
+  float output[kSize] = {};
+
+  Sub1Vector(input, kSize, output);
+
+  for (int i = 0; i < kSize; ++i) {
+    EXPECT_NEAR(output[i], expected[i], 1e-5f);
+  }
+}
+
+TEST(uKernels, ReductionSumVectorTailTest) {
+  constexpr int kOutputSize = 2;
+  constexpr int kReductionSize = 11;
+  const float input[kOutputSize * kReductionSize] = {
+      1.0f,  2.0f,  3.0f,  4.0f,  5.0f,  6.0f,  7.0f,  8.0f,  9.0f,  10.0f,
+      11.0f, -1.0f, -2.0f, -3.0f, -4.0f, -5.0f, -6.0f, -7.0f, -8.0f, -9.0f,
+      -10.0f, -11.0f};
+  float output[kOutputSize] = {};
+
+  ReductionSumVector(input, output, kOutputSize, kReductionSize);
+
+  EXPECT_NEAR(output[0], 66.0f, 1e-5f);
+  EXPECT_NEAR(output[1], -66.0f, 1e-5f);
+}
+
+TEST(uKernels, VectorScalarMultiplyTailTest) {
+  constexpr int kSize = 17;
+  const int8_t input[kSize] = {
+      -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8};
+  float output[kSize] = {};
+
+  VectorScalarMultiply(input, kSize, 0.25f, output);
+
+  for (int i = 0; i < kSize; ++i) {
+    EXPECT_NEAR(output[i], static_cast<float>(input[i]) * 0.25f, 1e-5f);
+  }
+}
+
+TEST(uKernels, IsZeroVectorTailTest) {
+  constexpr int kSize = 17;
+  float float_values[kSize] = {};
+  int8_t int8_values[kSize] = {};
+
+  EXPECT_TRUE(IsZeroVector(float_values, kSize));
+  EXPECT_TRUE(IsZeroVector(int8_values, kSize));
+
+  float_values[kSize - 1] = 1.0f;
+  int8_values[kSize - 1] = 1;
+  EXPECT_FALSE(IsZeroVector(float_values, kSize));
+  EXPECT_FALSE(IsZeroVector(int8_values, kSize));
+}
+
+TEST(uKernels, SymmetricQuantMatrixBatchVectorMultiplyAccumulateTailTest) {
+  constexpr int kRows = 2;
+  constexpr int kCols = 11;
+  constexpr int kBatch = 2;
+  const int8_t matrix[kRows * kCols] = {
+      1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11,
+      -1, 2, -3, 4, -5, 6, -7, 8, -9, 10, -11};
+  const int8_t vectors[kCols * kBatch] = {
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+  const float scaling_factors[kBatch] = {0.5f, -0.25f};
+  std::vector<float> output(kRows * kBatch, 1.0f);
+
+  MatrixBatchVectorMultiplyAccumulate(matrix, kRows, kCols, vectors,
+                                      scaling_factors, kBatch, output.data());
+
+  EXPECT_THAT(output,
+              ElementsAreArray(ArrayFloatNear({4.0f, -2.0f, -2.0f, 4.0f})));
+}
+
+TEST(uKernels, SymmetricQuantMatrixBatchVectorMultiplyAccumulateScratchTest) {
+  constexpr int kRows = 2;
+  constexpr int kCols = 11;
+  constexpr int kBatch = 2;
+  const int8_t matrix[kRows * kCols] = {
+      1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11,
+      -1, 2, -3, 4, -5, 6, -7, 8, -9, 10, -11};
+  const int8_t vectors[kCols * kBatch] = {
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+  const float scaling_factors[kBatch] = {0.5f, -0.25f};
+  std::vector<int32_t> scratch(kRows * kBatch, 0);
+  std::vector<float> output(kRows * kBatch, 1.0f);
+  CpuBackendContext context;
+
+  MatrixBatchVectorMultiplyAccumulate(
+      matrix, kRows, kCols, vectors, scaling_factors, kBatch, scratch.data(),
+      output.data(), &context);
+
+  EXPECT_THAT(scratch, testing::ElementsAre(6, -6, 12, -12));
+  EXPECT_THAT(output,
+              ElementsAreArray(ArrayFloatNear({4.0f, -2.0f, -2.0f, 4.0f})));
+}
+
+TEST(uKernels, PerChannelQuantMatrixBatchVectorMultiplyAccumulateTailTest) {
+  constexpr int kRows = 2;
+  constexpr int kCols = 11;
+  constexpr int kBatch = 2;
+  const int8_t matrix[kRows * kCols] = {
+      1, -2, 3, -4, 5, -6, 7, -8, 9, -10, 11,
+      -1, 2, -3, 4, -5, 6, -7, 8, -9, 10, -11};
+  const int8_t vectors[kCols * kBatch] = {
+      1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+      2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+  const float scaling_factors[kBatch] = {0.5f, -0.25f};
+  const float per_channel_scale[kRows] = {2.0f, -0.5f};
+  const int32_t input_offset[kBatch] = {1, -1};
+  std::vector<int32_t> row_sums(kRows, 0);
+  bool compute_row_sums = true;
+  std::vector<int32_t> scratch(kRows * kBatch, 0);
+  std::vector<float> output(kRows * kBatch, 1.0f);
+  CpuBackendContext context;
+
+  MatrixBatchVectorMultiplyAccumulate(
+      matrix, kRows, kCols, vectors, scaling_factors, kBatch, output.data(),
+      per_channel_scale, input_offset, scratch.data(), row_sums.data(),
+      &compute_row_sums, &context);
+
+  EXPECT_FALSE(compute_row_sums);
+  EXPECT_THAT(row_sums, testing::ElementsAre(6, -6));
+  EXPECT_THAT(output,
+              ElementsAreArray(ArrayFloatNear({1.0f, 1.0f, -8.0f, -1.25f})));
+}
+
 // Quantized matmul with 2 * 30 input and 9 * 30 matrix.
 TEST(uKernels, QuantMatrixBatchVectorMultiplyAccumulate8x8_16Test) {
   CpuBackendContext context;
@@ -1558,6 +1719,91 @@ TEST(uKernels, SparseMatrixBatchVectorMultiplyAccumulateTest) {
               ElementsAreArray(ArrayFloatNear(dense_output, 1e-4)));
 }
 
+TEST(uKernels, SparseMatrixBatchVectorMultiplyAccumulate1x4DifferentialTest) {
+  constexpr int kRows = 2;
+  constexpr int kCols = 12;
+  constexpr int kBatch = 2;
+  const float matrix[] = {
+      1.0f,  2.0f,  3.0f,  4.0f,  9.0f,  10.0f,
+      11.0f, 12.0f, -1.0f, -2.0f, -3.0f, -4.0f,
+  };
+  const int32_t segments[] = {0, 2, 3};
+  const int32_t indices[] = {0, 2, 1};
+  const float vector[] = {
+      1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 2.0f, 2.0f, 2.0f, 3.0f, 3.0f, 3.0f, 3.0f,
+      4.0f, 4.0f, 4.0f, 4.0f, 5.0f, 5.0f, 5.0f, 5.0f, 6.0f, 6.0f, 6.0f, 6.0f,
+  };
+  std::vector<float> expected(kRows * kBatch, 1.0f);
+  std::vector<float> actual = expected;
+  PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(
+      matrix, segments, indices, kRows, kCols, vector, kBatch, expected.data());
+  SparseMatrixBatchVectorMultiplyAccumulate1x4(
+      matrix, segments, indices, kRows, kCols, vector, kBatch, actual.data());
+  for (int i = 0; i < kRows * kBatch; ++i) {
+    EXPECT_NEAR(actual[i], expected[i], 1e-5f);
+  }
+}
+
+TEST(uKernels, SparseMatrixBatchVectorMultiplyAccumulateInt8DifferentialTest) {
+  constexpr int kRows = 2;
+  constexpr int kCols = 32;
+  constexpr int kBatch = 2;
+  const int8_t matrix[] = {
+      1,  -2, 3,  -4, 5,  -6, 7,  -8, 9,  -10, 11,  -12, 13,  -14, 15,  -16,
+      2,  -3, 4,  -5, 6,  -7, 8,  -9, 10, -11, 12,  -13, 14,  -15, 16,  -17,
+      -1, 2,  -3, 4,  -5, 6,  -7, 8,  -9, 10,  -11, 12,  -13, 14,  -15, 16,
+  };
+  const uint8_t ledger[] = {1, 1, 2, 0, 1};
+  const int8_t vectors[] = {
+      1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
+      2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,
+      -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+      3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+  };
+  const float scaling_factors[] = {0.5f, -0.25f};
+  const float per_channel_scale[] = {1.0f, 2.0f};
+  std::vector<float> expected = {1.0f, 2.0f, 3.0f, 4.0f};
+  std::vector<float> actual = expected;
+  PortableSparseMatrixBatchVectorMultiplyAccumulate(
+      matrix, ledger, kRows, kCols, vectors, scaling_factors, kBatch,
+      expected.data(), per_channel_scale);
+  SparseMatrixBatchVectorMultiplyAccumulate(matrix, ledger, kRows, kCols,
+                                            vectors, scaling_factors, kBatch,
+                                            actual.data(), per_channel_scale);
+  for (int i = 0; i < kRows * kBatch; ++i) {
+    EXPECT_NEAR(actual[i], expected[i], 1e-5f);
+  }
+}
+
+TEST(uKernels, SparseMatrixBatchVectorMultiplyAccumulate1x16DifferentialTest) {
+  constexpr int kRows = 2;
+  constexpr int kCols = 32;
+  constexpr int kBatch = 2;
+  const int8_t matrix[] = {
+      1,  -2, 3,  -4, 5,  -6, 7,  -8, 9,  -10, 11,  -12, 13,  -14, 15,  -16,
+      2,  -3, 4,  -5, 6,  -7, 8,  -9, 10, -11, 12,  -13, 14,  -15, 16,  -17,
+      -1, 2,  -3, 4,  -5, 6,  -7, 8,  -9, 10,  -11, 12,  -13, 14,  -15, 16,
+  };
+  const int32_t segments[] = {0, 1, 3};
+  const int32_t indices[] = {1, 0, 1};
+  const int8_t vector[] = {
+      1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
+      2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,
+      -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+      3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,  3,
+  };
+  const int32_t bias[] = {3, -4};
+  std::vector<int8_t> expected(kRows * kBatch, 0);
+  std::vector<int8_t> actual = expected;
+  PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(
+      matrix, segments, indices, kRows, kCols, vector, bias, kBatch, 2, 1 << 30,
+      0, nullptr, nullptr, 1, -128, 127, expected.data());
+  SparseMatrixBatchVectorMultiplyAccumulate1x16(
+      matrix, segments, indices, kRows, kCols, vector, bias, kBatch, 2, 1 << 30,
+      0, nullptr, nullptr, 1, -128, 127, actual.data());
+  EXPECT_THAT(actual, testing::ElementsAreArray(expected));
+}
+
 #ifdef __ANDROID__
 TEST(uKernels,
      SparseMatrixBatchVectorMultiplyAccumulateSymmetricQuantizedTest) {
@@ -1969,6 +2215,20 @@ TEST(uKernels, ReductionSumVectorIntegerTest) {
   ReductionSumVector(input, result1.data(), kOutputVectorSize1,
                      kReductionSize1);
   EXPECT_THAT(result1, testing::ElementsAreArray({3, 6, -1, 3, 15}));
+}
+
+TEST(uKernels, ReductionSumVectorInt8Test) {
+  constexpr int kOutputSize = 2;
+  constexpr int kReductionSize = 17;
+  static int8_t input[kOutputSize * kReductionSize] = {
+      1,  -2,  3,  -4,  5,  -6,  7,  -8,  9,  -10, 11, -12, 13, -14, 15, -16,
+      17, -1,  2,  -3, 4,  -5, 6,  -7, 8,  -9, 10, -11, 12, -13, 14, -15,
+      16, -17};
+  int32_t output[kOutputSize] = {};
+
+  ReductionSumVector(input, output, kOutputSize, kReductionSize);
+
+  EXPECT_THAT(output, testing::ElementsAre(9, -9));
 }
 
 void TwoGateSaturatingAdd(const int8_t* input, int8_t input_zp,

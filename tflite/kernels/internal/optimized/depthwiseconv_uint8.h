@@ -21,6 +21,7 @@ limitations under the License.
 #include "ruy/profiler/instrumentation.h"  // from @ruy
 #include "tflite/kernels/internal/optimized/cpu_check.h"
 #include "tflite/kernels/internal/optimized/depthwiseconv_uint8_3x3_filter.h"
+#include "tflite/kernels/internal/optimized/rvv_optimized_ops.h"
 #include "tflite/kernels/internal/reference/depthwiseconv_uint8.h"
 #include "tflite/kernels/internal/types.h"
 
@@ -1628,6 +1629,10 @@ inline void QuantizedDepthwiseConvAccumRowGeneric(
 inline void DepthwiseConvInitAccBuffer(int num_output_pixels, int output_depth,
                                        const int32_t* bias_data,
                                        int32_t* acc_buffer) {
+  if (bias_data == nullptr) {
+    std::fill(acc_buffer, acc_buffer + num_output_pixels * output_depth, 0);
+    return;
+  }
   int i = 0;
 #ifdef USE_NEON
   if (output_depth == 1) {
@@ -2054,6 +2059,34 @@ inline void DepthwiseConvWithRounding(
   const int input_depth = input_shape.Dims(3);
   TFLITE_DCHECK_EQ(output_depth, input_depth * depth_multiplier);
   TFLITE_DCHECK_EQ(bias_shape.FlatSize(), output_depth);
+
+#if defined(__riscv_vector)
+  const int batches = MatchingDim(input_shape, 0, output_shape, 0);
+  const long long rvv_work = static_cast<long long>(batches) *
+                             output_shape.Dims(1) * output_shape.Dims(2) *
+                             output_depth * filter_shape.Dims(1) *
+                             filter_shape.Dims(2);
+  // The channel-vectorized RVV depthwise kernel (uint8 input x uint8 filter,
+  // widened to i16 then i32 vwmacc) is beneficial on RVV for the benchmark
+  // models; 2e7 covers every layer of MobileNetV1/V2 uint8 and
+  // EfficientDet-Lite0. Keep the scalar LiteRT backend only for pathological
+  // shapes that exceed this cap.
+  constexpr long long kRvvDepthwiseMaxWork = 20000000;
+  if (rvv_work <= kRvvDepthwiseMaxWork) {
+    rvv_optimized_ops::DepthwiseConvUint8(
+        input_data, filter_data, bias_data, output_data, batches,
+        input_shape.Dims(1), input_shape.Dims(2), input_depth,
+        filter_shape.Dims(1), filter_shape.Dims(2), output_shape.Dims(1),
+        output_shape.Dims(2), output_depth, depth_multiplier,
+        params.stride_height, params.stride_width, params.padding_values.height,
+        params.padding_values.width, dilation_height_factor,
+        dilation_width_factor, params.input_offset, params.weights_offset,
+        params.output_offset, params.output_multiplier, params.output_shift,
+        output_activation_min, output_activation_max, thread_start, thread_end,
+        thread_dim);
+    return;
+  }
+#endif
 
 // Enable for arm64 except for the Nvidia Linux 4 Tegra (L4T) running on
 // Jetson TX-2. This compiler does not support the offsetof() macro.

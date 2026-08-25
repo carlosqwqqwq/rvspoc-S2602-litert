@@ -78,7 +78,8 @@ static constexpr int kTableSize = 256;
 struct SoftmaxOpData {
   ~SoftmaxOpData() {
     delete[] table;
-#ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
+#if defined(TFLITE_SOFTMAX_USE_UINT16_LUT) || \
+    defined(TFLITE_RVV_ENABLE_SOFTMAX_LUT)
     delete[] uint8_table1;
     delete[] uint8_table2;
 #endif
@@ -87,7 +88,8 @@ struct SoftmaxOpData {
   }
   struct SoftmaxParams params = {};
   float* table = nullptr;
-#ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
+#if defined(TFLITE_SOFTMAX_USE_UINT16_LUT) || \
+    defined(TFLITE_RVV_ENABLE_SOFTMAX_LUT)
   uint8_t* uint8_table1 = nullptr;
   uint8_t* uint8_table2 = nullptr;
 #endif
@@ -575,9 +577,10 @@ TfLiteStatus SoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
       switch (output->type) {
         case kTfLiteUInt8:
         case kTfLiteInt8:
-#ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
+#if defined(TFLITE_SOFTMAX_USE_UINT16_LUT) || \
+    defined(TFLITE_RVV_ENABLE_SOFTMAX_LUT)
           // Only apply when both input & output are uint8/int8 & build with
-          // clang on aarch64.
+          // the corresponding optimized LUT implementation.
           // TODO(b/143709993): Port to ARMv7 and other platforms.
           if (!data->uint8_table1) {
             data->uint8_table1 = new uint8_t[kTableSize];
@@ -1197,7 +1200,8 @@ TfLiteStatus SoftmaxQuantized<int8_t, int8_t>(TfLiteContext* context,
                            GetTensorData<int8_t>(input), GetTensorShape(output),
                            GetTensorData<int8_t>(output));
   } else {
-#ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
+#if defined(TFLITE_SOFTMAX_USE_UINT16_LUT) && \
+    !defined(TFLITE_RVV_ENABLE_SOFTMAX_LUT)
     optimized_ops::SoftmaxInt8LUT(
         data->params, GetTensorShape(input), GetTensorData<int8_t>(input),
         GetTensorShape(output), GetTensorData<int8_t>(output));
@@ -1221,7 +1225,8 @@ TfLiteStatus SoftmaxQuantized<uint8_t, uint8_t>(TfLiteContext* context,
         data->params, GetTensorShape(input), GetTensorData<uint8_t>(input),
         GetTensorShape(output), GetTensorData<uint8_t>(output));
   } else {
-#ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
+#if defined(TFLITE_SOFTMAX_USE_UINT16_LUT) && \
+    !defined(TFLITE_RVV_ENABLE_SOFTMAX_LUT)
     optimized_ops::SoftmaxInt8LUT(
         data->params, GetTensorShape(input), GetTensorData<uint8_t>(input),
         GetTensorShape(output), GetTensorData<uint8_t>(output));

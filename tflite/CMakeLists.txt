@@ -67,6 +67,10 @@ set(TF_SOURCE_DIR "${TENSORFLOW_SOURCE_DIR}/tensorflow")
 set(TSL_SOURCE_DIR "${TENSORFLOW_SOURCE_DIR}/third_party/xla/third_party/tsl")
 set(XLA_SOURCE_DIR "${TENSORFLOW_SOURCE_DIR}/third_party/xla/")
 set(TFLITE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
+# Keep the logical source path instead of resolving junctions. On Windows,
+# REALPATH can turn an ASCII build alias back into a non-ASCII path before
+# protoc is invoked.
+get_filename_component(TFLITE_SOURCE_ROOT "${TFLITE_SOURCE_DIR}/.." ABSOLUTE)
 set(CMAKE_MODULE_PATH
   "${TFLITE_SOURCE_DIR}/tools/cmake/modules"
   ${CMAKE_MODULE_PATH}
@@ -90,6 +94,9 @@ option(TFLITE_ENABLE_GPU "Enable GPU" OFF)
 option(TFLITE_ENABLE_METAL "Enable Metal delegate (iOS only)" OFF)
 option(TFLITE_ENABLE_XNNPACK "Enable XNNPACK backend" ON)
 option(TFLITE_ENABLE_EXTERNAL_DELEGATE "Enable External Delegate backend" ON)
+
+option(TFLITE_RVV_ENABLE_SOFTMAX_LUT
+       "Enable the validated RVV INT8 Softmax LUT path (RV64GCV only)" ON)
 
 option(TFLITE_KERNEL_TEST "Enable tflite kernel unit test" OFF)
 
@@ -675,6 +682,20 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "iOS")
   set_source_files_properties(${TFLITE_SOURCE_DIR}/profiling/signpost_profiler.mm PROPERTIES COMPILE_FLAGS -fno-objc-arc)
 endif()
 
+# The v2.1.4 source tag pins a TensorFlow checkout that predates two files
+# referenced by the newer CMake file. Keep the local pinned checkout usable
+# while retaining each file when a newer compatible TensorFlow source is
+# supplied.
+set(TFLITE_TF_OPTIONAL_SRCS)
+foreach(TF_OPTIONAL_SRC
+    compiler/mlir/lite/core/api/flatbuffer_conversions.cc
+    compiler/mlir/lite/core/c/tflite_types.h)
+  if(EXISTS "${TF_SOURCE_DIR}/${TF_OPTIONAL_SRC}")
+    list(APPEND TFLITE_TF_OPTIONAL_SRCS
+      ${TF_SOURCE_DIR}/${TF_OPTIONAL_SRC})
+  endif()
+endforeach()
+
 # TFLite library
 set(_ALL_TFLITE_SRCS
   # go/keep-sorted start
@@ -715,23 +736,22 @@ set(_ALL_TFLITE_SRCS
   ${TFLITE_SOURCE_DIR}/schema/conversion_metadata_generated.h
   ${TFLITE_SOURCE_DIR}/schema/schema_generated.h
   ${TFLITE_SRCS}
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/allocation.cc
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/allocation.h
+  ${TFLITE_SOURCE_DIR}/converter/allocation.cc
+  ${TFLITE_SOURCE_DIR}/converter/allocation.h
   ${TF_SOURCE_DIR}/compiler/mlir/lite/core/api/error_reporter.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/core/api/error_reporter.h
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/core/api/flatbuffer_conversions.cc
+  ${TFLITE_TF_OPTIONAL_SRCS}
   ${TF_SOURCE_DIR}/compiler/mlir/lite/core/api/verifier.h
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/core/c/tflite_types.h
   ${TF_SOURCE_DIR}/compiler/mlir/lite/core/macros.h
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/core/model_builder_base.cc
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/core/model_builder_base.h
+  ${TFLITE_SOURCE_DIR}/converter/core/model_builder_base.cc
+  ${TFLITE_SOURCE_DIR}/converter/core/model_builder_base.h
   ${TF_SOURCE_DIR}/compiler/mlir/lite/experimental/remat/metadata_util.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/experimental/remat/metadata_util.h
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/mmap_allocation.cc
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/mmap_allocation_disabled.cc
+  ${TFLITE_SOURCE_DIR}/converter/mmap_allocation.cc
+  ${TFLITE_SOURCE_DIR}/converter/mmap_allocation_disabled.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/schema/conversion_metadata_generated.h
   ${TF_SOURCE_DIR}/compiler/mlir/lite/schema/schema_generated.h
-  ${TF_SOURCE_DIR}/compiler/mlir/lite/schema/schema_utils.cc
+  ${TFLITE_SOURCE_DIR}/converter/schema/schema_utils.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/utils/control_edges.h
   ${TF_SOURCE_DIR}/compiler/mlir/lite/utils/string_utils.cc
   ${TF_SOURCE_DIR}/compiler/mlir/lite/utils/string_utils.h
@@ -790,6 +810,20 @@ target_compile_definitions(tensorflow-lite
     TF_PATCH_VERSION=0
     TF_VERSION_SUFFIX=""
 )
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  include(CheckCXXSourceCompiles)
+  check_cxx_source_compiles(
+    "#include <riscv_vector.h>
+     int main() { size_t vl = __riscv_vsetvl_e8m1(16); return (int)vl; }"
+    TFLITE_HAS_RVV_INTRINSICS)
+  if(TFLITE_HAS_RVV_INTRINSICS)
+    target_compile_definitions(tensorflow-lite PRIVATE FC_4BIT_RVV=1)
+    if(TFLITE_RVV_ENABLE_SOFTMAX_LUT)
+      target_compile_definitions(tensorflow-lite
+                                 PRIVATE TFLITE_RVV_ENABLE_SOFTMAX_LUT=1)
+    endif()
+  endif()
+endif()
 add_library(${PROJECT_NAME}::tensorflowlite ALIAS tensorflow-lite)
 
 # The install targets.

@@ -346,7 +346,11 @@ TfLiteStatus EvalAddQuantized(TfLiteContext* context, TfLiteNode* node,
         if (need_broadcast) {
           TF_LITE_ADD(optimized_integer_ops, BroadcastAddDispatch, int8_t);
         } else {
-          TF_LITE_ADD(optimized_integer_ops, Add, int8_t);
+          optimized_integer_ops::Add(
+              op_params, GetTensorShape(input1), GetTensorData<int8_t>(input1),
+              GetTensorShape(input2), GetTensorData<int8_t>(input2),
+              GetTensorShape(output), GetTensorData<int8_t>(output),
+              CpuBackendContext::GetFromContext(context));
         }
       }
     } else if (output->type == kTfLiteInt16) {

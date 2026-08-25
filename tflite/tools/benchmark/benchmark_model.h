@@ -16,6 +16,7 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TOOLS_BENCHMARK_BENCHMARK_MODEL_H_
 #define TENSORFLOW_LITE_TOOLS_BENCHMARK_BENCHMARK_MODEL_H_
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -26,7 +27,6 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
-#include "tensorflow/core/util/stats_calculator.h"
 #include "tflite/core/c/common.h"
 #include "tflite/profiling/memory_info.h"
 #include "tflite/profiling/memory_usage_monitor.h"
@@ -41,13 +41,84 @@ enum RunType {
   REGULAR,
 };
 
+// The v2.1.4 TensorFlow pin exposes tsl::Stat but not the
+// StatWithPercentiles API used by LiteRT's benchmark sources. Keep this
+// compatibility type local to the benchmark and preserve its text output.
+template <typename ValueType>
+class StatWithPercentiles {
+ public:
+  void UpdateStat(ValueType value) {
+    values_.push_back(value);
+    sum_ += value;
+    squared_sum_ += static_cast<double>(value) * value;
+  }
+
+  bool empty() const { return values_.empty(); }
+  ValueType first() const { return empty() ? ValueType{} : values_.front(); }
+  ValueType newest() const { return empty() ? ValueType{} : values_.back(); }
+  ValueType min() const {
+    return empty() ? ValueType{}
+                   : *std::min_element(values_.begin(), values_.end());
+  }
+  ValueType max() const {
+    return empty() ? ValueType{}
+                   : *std::max_element(values_.begin(), values_.end());
+  }
+  int64_t count() const { return static_cast<int64_t>(values_.size()); }
+  ValueType sum() const { return sum_; }
+  double squared_sum() const { return squared_sum_; }
+  bool all_same() const { return empty() || min() == max(); }
+
+  double avg() const {
+    return empty() ? std::numeric_limits<double>::quiet_NaN()
+                   : static_cast<double>(sum_) / count();
+  }
+
+  double std_deviation() const {
+    if (empty() || min() == max()) return 0.0;
+    const double variance = squared_sum_ / count() - avg() * avg();
+    return std::sqrt(std::max(0.0, variance));
+  }
+
+  ValueType percentile(int percent) const {
+    if (empty()) return ValueType{};
+    std::vector<ValueType> sorted = values_;
+    std::sort(sorted.begin(), sorted.end());
+    const int clamped = std::max(0, std::min(100, percent));
+    const size_t rank = (static_cast<size_t>(clamped) * sorted.size() + 99) /
+                        100;
+    return sorted[std::min(sorted.size() - 1, rank == 0 ? size_t{0} : rank - 1)];
+  }
+
+  void OutputToStream(std::ostream* stream) const {
+    if (empty()) {
+      *stream << "count=0";
+    } else if (min() == max()) {
+      *stream << "count=" << count() << " curr=" << newest();
+      if (count() > 1) *stream << "(all same)";
+    } else {
+      *stream << "count=" << count() << " first=" << first()
+              << " curr=" << newest() << " min=" << min()
+              << " max=" << max() << " avg=" << avg()
+              << " std=" << std_deviation() << " p5=" << percentile(5)
+              << " median=" << percentile(50)
+              << " p95=" << percentile(95);
+    }
+  }
+
+ private:
+  std::vector<ValueType> values_;
+  ValueType sum_ = 0;
+  double squared_sum_ = 0.0;
+};
+
 class BenchmarkResults {
  public:
   BenchmarkResults() {}
   BenchmarkResults(double model_size_mb, int64_t startup_latency_us,
                    uint64_t input_bytes,
-                   tensorflow::StatWithPercentiles<int64_t> warmup_time_us,
-                   tensorflow::StatWithPercentiles<int64_t> inference_time_us,
+                   StatWithPercentiles<int64_t> warmup_time_us,
+                   StatWithPercentiles<int64_t> inference_time_us,
                    const profiling::memory::MemoryUsage& init_mem_usage,
                    const profiling::memory::MemoryUsage& overall_mem_usage,
                    float peak_mem_mb)
@@ -61,10 +132,10 @@ class BenchmarkResults {
         peak_mem_mb_(peak_mem_mb) {}
 
   const double model_size_mb() const { return model_size_mb_; }
-  tensorflow::StatWithPercentiles<int64_t> inference_time_us() const {
+  StatWithPercentiles<int64_t> inference_time_us() const {
     return inference_time_us_;
   }
-  tensorflow::StatWithPercentiles<int64_t> warmup_time_us() const {
+  StatWithPercentiles<int64_t> warmup_time_us() const {
     return warmup_time_us_;
   }
   int64_t startup_latency_us() const { return startup_latency_us_; }
@@ -87,8 +158,8 @@ class BenchmarkResults {
   double model_size_mb_ = 0.0;
   int64_t startup_latency_us_ = 0;
   uint64_t input_bytes_ = 0;
-  tensorflow::StatWithPercentiles<int64_t> warmup_time_us_;
-  tensorflow::StatWithPercentiles<int64_t> inference_time_us_;
+  StatWithPercentiles<int64_t> warmup_time_us_;
+  StatWithPercentiles<int64_t> inference_time_us_;
   profiling::memory::MemoryUsage init_mem_usage_;
   profiling::memory::MemoryUsage overall_mem_usage_;
   // An invalid value could happen when we don't monitor memory footprint for
@@ -219,7 +290,7 @@ class BenchmarkModel {
   // Get the model file size if it's available.
   virtual int64_t MayGetModelFileSize() { return -1; }
   virtual uint64_t ComputeInputBytes() = 0;
-  virtual tensorflow::StatWithPercentiles<int64_t> Run(
+  virtual StatWithPercentiles<int64_t> Run(
       int min_num_times, float min_secs, float max_secs, RunType run_type,
       TfLiteStatus* invoke_status);
   // Prepares input data for benchmark. This can be used to initialize input

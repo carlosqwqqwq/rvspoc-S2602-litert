@@ -22,12 +22,19 @@ limitations under the License.
 #endif
 
 #include "tflite/kernels/internal/optimized/optimized_ops.h"
+#if defined(__riscv_vector)
+#include "tflite/kernels/internal/optimized/rvv_optimized_ops.h"
+#endif
 
 namespace tflite {
 namespace optimized_integer_ops {
 
 inline void LookupTable(const uint8_t* input_data, int num_elements,
                         const uint8_t* lut, uint8_t* output_data) {
+#if defined(__riscv_vector)
+  rvv_optimized_ops::RvvLookupTable(input_data, num_elements, lut, output_data);
+  return;
+#endif
   int i = 0;
 #if __aarch64__ && __clang__
   // This code uses ARM64-only instructions.
@@ -61,6 +68,10 @@ inline void LookupTable(const uint8_t* input_data, int num_elements,
 // LookupTable function.
 inline void LookupTable(const int8_t* input_data, int num_elements,
                         const int8_t* lut, int8_t* output_data) {
+#if defined(__riscv_vector)
+  rvv_optimized_ops::RvvLookupTable(input_data, num_elements, lut, output_data);
+  return;
+#endif
   LookupTable(reinterpret_cast<const uint8_t*>(input_data), num_elements,
               reinterpret_cast<const uint8_t*>(lut),
               reinterpret_cast<uint8_t*>(output_data));
