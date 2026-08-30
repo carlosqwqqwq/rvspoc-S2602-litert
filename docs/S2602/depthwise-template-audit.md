@@ -78,6 +78,6 @@
 | UINT8 `depthwiseconv_uint8.h` | 22 | 9 | 13 | 22 个由通用 RVV 入口覆盖（M=1 通道路径 + M>1 fan-out 路径） |
 | **合计** | **58** | **24** | **34** | **58/58 call-site family 路由至通用 RVV；不是 58 个独立专用微内核** |
 
-六个冻结模型的 depthwise 实际都是 `depth_multiplier=1`；当前 QEMU VLEN=128/256/512 六模型共 18/18 通过，INT8 最大差异 1 LSB、FP32 最大绝对误差 `6.020e-6`。M>1 另由独立 scalar reference 覆盖 M=2/3/5/17、VLEN=128/256/512/1024、行切分与零点边界，四档均通过，证据见 `results/depthwise/`；模型证据见 `results/model-differential/`，官方 kernel suite 三档各 137/137 见 `results/official-kernel-suite/`。
+六个冻结模型的 depthwise 实际都是 `depth_multiplier=1`；固定输入下 QEMU VLEN=128/256/512 六模型共 18/18 通过，MobileNet 量化输出最大差异 1 LSB、FP32 模型输出最大绝对误差 `4.888e-6`。M>1 另由独立 scalar reference 覆盖 M=2/3/5/17、VLEN=128/256/512/1024、行切分与零点边界，四档均通过，证据见 `results/depthwise/`；模型证据见 `results/model-differential/`，官方 kernel suite 三档各 137/137 见 `results/official-kernel-suite/`。
 
-因此本表用于防止覆盖宣传失真：功能组口径仍为六模型实际命中的 27/27；实际 61 个 ARM 保护函数入口和这 58 个 ARM 模板特化不混为一个百分比，历史 63 行入口表中的两个 Pow 函数不属于 ARM 分母。当前 generic RVV 已覆盖该 depthwise family 的 M=1/M>1 layout，但没有把一个 generic 入口宣传成 58 个独立 ARM template 微内核；非 RVV 目标仍保留标量回退。
+因此本表采用分层统计口径：功能组口径为六模型实际命中的 27/27；实际 61 个 ARM 保护函数入口和这 58 个 ARM 模板特化分别统计，历史 63 行入口表中的两个 Pow 函数不属于 ARM 分母。generic RVV 已覆盖该 depthwise family 的 M=1/M>1 layout；58 个模板特化均映射到对应通用入口，非 RVV 目标仍保留标量回退。

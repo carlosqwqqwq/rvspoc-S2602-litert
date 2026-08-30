@@ -8,13 +8,15 @@ import sys
 
 
 ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/model-differential")
+# The quantized MobileNet FlatBuffers use UINT8 tensors; EfficientDet's
+# quantized model exposes FP32 output tensors.
 MODELS = (
     ("v1-fp32", "fp32"),
-    ("v1-int8", "int8"),
+    ("v1-int8", "uint8"),
     ("v2-fp32", "fp32"),
-    ("v2-int8", "int8"),
+    ("v2-int8", "uint8"),
     ("efficientdet-fp32", "fp32"),
-    ("efficientdet-int8", "int8"),
+    ("efficientdet-int8", "fp32"),
 )
 
 
@@ -22,6 +24,10 @@ def max_int8_diff(candidate: bytes, reference: bytes) -> int:
     actual = struct.unpack(f"<{len(candidate)}b", candidate)
     expected = struct.unpack(f"<{len(reference)}b", reference)
     return max((abs(a - b) for a, b in zip(actual, expected)), default=0)
+
+
+def max_uint8_diff(candidate: bytes, reference: bytes) -> int:
+    return max((abs(a - b) for a, b in zip(candidate, reference)), default=0)
 
 
 def main() -> int:
@@ -32,12 +38,13 @@ def main() -> int:
             candidate = (ROOT / f"{name}-vlen{vlen}-gcv.raw").read_bytes()
             if len(candidate) != len(reference):
                 raise AssertionError(f"{name} VLEN={vlen}: output length differs")
-            if dtype == "int8":
+            if dtype in ("int8", "uint8"):
                 diffs = sum(a != b for a, b in zip(candidate, reference))
-                maximum = max_int8_diff(candidate, reference)
-                print(f"  VLEN={vlen} byte_diffs={diffs} max_int8_diff={maximum}")
+                maximum = (max_int8_diff(candidate, reference)
+                           if dtype == "int8" else max_uint8_diff(candidate, reference))
+                print(f"  VLEN={vlen} byte_diffs={diffs} max_{dtype}_diff={maximum}")
                 if maximum > 1:
-                    raise AssertionError(f"{name} VLEN={vlen}: INT8 error > 1 LSB")
+                    raise AssertionError(f"{name} VLEN={vlen}: {dtype} error > 1 LSB")
             else:
                 actual = struct.unpack(f"<{len(candidate) // 4}f", candidate)
                 expected = struct.unpack(f"<{len(reference) // 4}f", reference)

@@ -2,7 +2,8 @@
 
 # 固定输入
 
-输入均为连续 little-endian tensor 数据，供模型回归和板卡运行脚本使用。
+输入均为连续 little-endian tensor 数据，供 `scripts/run-model-differential.sh`
+和 benchmark 命令使用。
 
 | 文件 | shape | 元素类型 |
 | --- | --- | --- |
@@ -11,5 +12,6 @@
 | `efficientdet-fp32.input` | `1x320x320x3` | FP32 |
 | `efficientdet-u8.input` | `1x320x320x3` | UINT8 |
 
-对应文件直接作为输入载荷传给复现实验脚本；模型、输入、线程数和 VLEN 的组合
-由 `SUBMISSION.md` 中的命令固定。
+脚本通过 `--input_layer_value_files=input:<file>` 传入文件，并使用
+`--input_layer=input` 与表中 shape。模型、输入、线程数和 VLEN 的组合由
+`SUBMISSION.md` 中的命令固定。

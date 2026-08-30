@@ -2,9 +2,9 @@
 
 # S2602 61 个 ARM 优化入口逐项证据矩阵
 
-绑定源码：LiteRT v2.1.4，基线 `ea79caffdd0f52cd44f203674f18a16a3cb861ad`；当前候选源码为本仓库根目录。
+绑定源码：LiteRT v2.1.4，基线 `ea79caffdd0f52cd44f203674f18a16a3cb861ad`；提交源码为本仓库根目录。
 
-本表把 61 个实际 ARM 保护入口逐项列出。`RVV-DIRECT`/`RVV-SHARED` 是静态路由状态，不等于入口级验收通过；三档 VLEN、`rv64gc` 回退和 scalar differential 必须逐入口补证。当前已完成的 137 项官方 kernel suite 是独立的通用回归证据，不能替代本表的 61 行动态证据。
+本表把 61 个实际 ARM 保护入口逐项列出。`RVV-DIRECT`/`RVV-SHARED` 是静态路由状态，不等于入口级验收通过；三档 VLEN、`rv64gc` 回退和 scalar differential 需要逐入口补证。已归档的 137 项官方 kernel suite 是独立的通用回归证据，不能替代本表的 61 行动态证据。
 
 | # | ARM 入口 | RVV 路由 | 静态口径 | VLEN128/256/512 | GC fallback | scalar diff | 当前放行 |
 | ---: | --- | --- | --- | --- | --- | --- | --- |
@@ -74,5 +74,5 @@
 
 - 实际 ARM 分母：61；严格 90% 门槛：55。
 - 静态路由：`RVV-DIRECT 47/61`、`RVV-SHARED 14/61`；若组委会接受 shared helper 归并，静态路由可描述为 61/61，但当前仍不宣称严格 90% 动态覆盖。
-- 当前包内可复核的通用证据：`results/official-kernel-suite/vlen128-summary`、`vlen256-summary`、`vlen512-summary`（三档均 137/137）。
+- 提交内可复核的通用证据：`results/official-kernel-suite/vlen128-summary`、`vlen256-summary`、`vlen512-summary`（三档均 137/137）。
 - 放行规则：补齐每行的调用者/算子、输入 shape/dtype、VLEN 128/256/512、GC fallback、scalar/reference 最大误差、运行次数与原始日志后，才能把 `PENDING-ENTRY` 改为 `PASS`。

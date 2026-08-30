@@ -3,7 +3,7 @@
 # S2602 提交说明
 
 本说明对应 LiteRT v2.1.4 的 RV64GCV/RVV 1.0 适配。模型、输入、构建产物和
-实验数据均随本 PR 归档。本文给出一条完整复现路径；不依赖其他说明文件才能
+实验数据均随提交归档。本文给出一条完整复现路径；不依赖其他说明文件即可
 理解提交内容。
 
 ## 结果摘要
@@ -16,23 +16,33 @@
 | ARM 优化入口静态审计 | 61/61 | 47 个 direct 路由、14 个 shared 路由 |
 | Depthwise 特化审计 | 58/58 | FP32 14、UINT8 22、INT8 22，通用 RVV 路径覆盖 |
 | 官方 kernel suite | 137/137 × 3 档 VLEN | 三档日志均为 PASS |
-| 六模型差分归档 | 18/18 | MobileNetV1/V2、EfficientDet-Lite0，FP32/INT8；记录含对应构建、参数和 raw 输出 |
-| FP32 算子差分 | 最大绝对误差 `3.576e-7` | 阈值 `1e-5` |
-| INT8 算子差分 | 最大差异 `0` | 阈值 `1 LSB` |
+| 六模型差分归档 | 18/18 | MobileNetV1/V2、EfficientDet-Lite0，FP32/量化；记录含对应构建、参数和 raw 输出 |
+| FP32 模型输出差分 | 最大绝对误差 `4.888e-6` | 阈值 `1e-5` |
+| MobileNet 量化输出差分 | 最大 UINT8 差异 `1` | 阈值 `1 LSB` |
+| EfficientDet-Lite0 量化模型输出差分 | 最大 FP32 绝对误差 `0` | 阈值 `1e-5` |
 
-### 当前候选的可复核性能
+### QEMU 可复核性能
 
-以下是当前 GCV 与 GC 标量构建在同一 QEMU 命令、同一模型、同一线程数下的
-10 次正式测量。QEMU 用于回归和相对比较，不能代替 A210 的 110 ms 评分。
+以下是 GCV 与 GC 标量构建在同一 QEMU 命令、同一模型、同一线程数下的
+10 次正式测量，覆盖赛题要求的 MobileNetV1、MobileNetV2 和 EfficientDet-Lite0
+三个模型系列。QEMU 用于回归和相对比较，不能代替 A210 的 110 ms 评分。
 
 | 构建 | 模型 | VLEN | 线程 | avg (ms) | p50 (ms) | p95 (ms) | std (ms) | p95/avg | FPS |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| GCV | EfficientDet-Lite0 INT8 | 256 | 8 | 3340.270 | 3201.113 | 3995.759 | 333.136 | 1.196 | 0.299377 |
-| GC scalar | EfficientDet-Lite0 INT8 | — | 8 | 7477.056 | 7372.711 | 8363.659 | 415.871 | 1.119 | 0.133742 |
+| GCV | EfficientDet-Lite0 INT8 | 256 | 8 | 5125.200 | 4795.806 | 9214.654 | 1471.370 | 1.798 | 0.195114 |
+| GC scalar | EfficientDet-Lite0 INT8 | — | 8 | 13892.300 | 13432.739 | 16493.615 | 1917.410 | 1.187 | 0.071982 |
+| GCV | MobileNetV1 FP32 | 256 | 8 | 3076.820 | 3036.243 | 3680.048 | 435.590 | 1.196 | 0.325011 |
+| GC scalar | MobileNetV1 FP32 | — | 8 | 3400.500 | 3413.013 | 4316.555 | 445.479 | 1.269 | 0.294074 |
+| GCV | MobileNetV1 INT8 | 256 | 8 | 4283.860 | 3966.740 | 5552.284 | 828.662 | 1.296 | 0.233434 |
+| GC scalar | MobileNetV1 INT8 | — | 8 | 548.771 | 450.076 | 831.643 | 197.020 | 1.515 | 1.822254 |
+| GCV | MobileNetV2 FP32 | 256 | 8 | 2740.130 | 2773.064 | 3235.513 | 289.946 | 1.181 | 0.364946 |
+| GC scalar | MobileNetV2 FP32 | — | 8 | 1876.690 | 1791.761 | 2496.361 | 348.486 | 1.330 | 0.532853 |
+| GCV | MobileNetV2 INT8 | 256 | 8 | 2715.200 | 2311.530 | 4280.721 | 995.781 | 1.577 | 0.368297 |
+| GC scalar | MobileNetV2 INT8 | — | 8 | 698.123 | 697.611 | 835.516 | 88.418 | 1.197 | 1.432412 |
 
-相对 GC scalar：avg `2.238×`、p50 `2.303×`、p95 `2.093×`。当前 GCV
-初始化 `133.474 ms`、overall footprint `19.3242 MB`；GC scalar 初始化
-`116.023 ms`、overall footprint `20.3477 MB`。这些绝对延迟来自 QEMU，
+相对 GC scalar：avg `2.711×`、p50 `2.801×`、p95 `1.790×`。当前 GCV
+初始化 `108.705 ms`、overall footprint `19.5508 MB`；GC scalar 初始化
+`123.570 ms`、overall footprint `20.1562 MB`。这些绝对延迟来自 QEMU，
 不用于声称满足 110 ms。
 
 ### ARM Neon 工程对照
@@ -51,14 +61,15 @@ Raspberry Pi 5（Cortex-A76，aarch64，4 线程）的独立 Neon 参考测量�
 
 ### Top-1 证据
 
-冻结的 200 张真实图像、4 个 MobileNet 模型共 800 次推理全部正常退出，
+冻结样本表对应 200 张真实图像、4 个 MobileNet 模型共 800 次推理全部正常退出，
 RVV 与参考构建的 argmax 为 `800/800` 一致；四个模型的 Top-1 差异均为
 `0.00` 个百分点。提交内保留参考与 RVV 输出归档、固定标签和逐模型退出记录，
-当前候选的整网数值正确性以六模型差分归档和当前 EfficientDet 输出逐项复核为准。
+可直接复核已保存的 800 对输出；重算 Top-1 需要与 `ground-truth.tsv` 对应的
+原始图像载荷。
 
 ### A210 与 110 ms 状态
 
-当前 A210 slot 未完成 BatchMode 验收，本轮没有把历史板卡数据写成当前成绩。
+当前尚未形成有效 A210 实测成绩。
 因此：
 
 - 当前提交材料包含可在 A210 上直接运行的 GCV/GC benchmark 和完整指标命令；
@@ -143,8 +154,11 @@ qemu-riscv64 -L /usr/riscv64-linux-gnu \
   -cpu rv64,v=true,vlen=256,vext_spec=v1.0 \
   build-rv64gcv/tools/benchmark/benchmark_model \
   --graph=models/efficientdet_lite0_int8.tflite \
+  --input_layer=input --input_layer_shape=1,320,320,3 \
+  --input_layer_value_files=input:inputs/efficientdet-u8.input \
   --num_threads=8 --warmup_runs=3 --num_runs=10 \
-  --min_secs=0 --max_secs=300 --enable_op_profiling=false
+  --min_secs=0 --max_secs=300 --enable_op_profiling=false \
+  --output_filepath=results/qemu/efficientdet-int8-gcv.raw
 ```
 
 将 `vlen` 改为 `128` 或 `512` 可验证运行时向量长度分派；将 ELF 换成
@@ -152,9 +166,11 @@ qemu-riscv64 -L /usr/riscv64-linux-gnu \
 
 ## 精度与覆盖验证
 
-模型差分目录包含同一输入、同一模型下的 GC raw 和 GCV raw：
+模型差分目录包含同一输入、同一模型下的 GC raw 和 GCV raw。使用提交内
+benchmark 和固定输入重新生成：
 
 ```bash
+bash scripts/run-model-differential.sh
 python3 scripts/compare-model-differential.py results/model-differential
 ```
 
@@ -179,7 +195,7 @@ bash scripts/run-official-suite.sh <build-root> 512 <out-dir>
 
 ## 提交边界与许可
 
-进入 PR 的内容为 LiteRT 源码、必要的 CMake/toolchain、构建与验证脚本、
+提交内容为 LiteRT 源码、必要的 CMake/toolchain、构建与验证脚本、
 覆盖矩阵、AI 披露、六个题目模型、固定输入、RV64GC/RV64GCV benchmark ELF，
 以及 `results/` 下的模型差分、Top-1、算子 profile、QEMU A/B、ARM Neon、
 depthwise 和官方 kernel suite 复核材料。构建目录、缓存、本地容器信息和隐藏
