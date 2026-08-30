@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Compare GCV outputs with the same-source GC scalar reference."""
 
 from pathlib import Path

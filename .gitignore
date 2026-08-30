@@ -22,6 +22,14 @@ Thumbs.db
 cmake_build_android_arm64/
 host_flatc_build/
 cmake_build/
+/build-rv64gcv*/
+/build-rv64gc*/
+/results/a210-*/
+/results/_tmp-*/
+/results/*.raw
+/results/profile-*.csv
+/results/coverage-audit-final.tsv
+/results/qemu-*-final.log
 
 /.bazelrc.user
 /bazel-*

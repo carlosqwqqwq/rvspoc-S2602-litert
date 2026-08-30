@@ -134,7 +134,7 @@ struct RvvGemmQuantizedTask : cpu_backend_threadpool::Task {
       const int32_t* bias, int32_t multiplier, int multiplier_shift,
       const int32_t* multiplier_perchannel, const int* shift_perchannel,
       int32_t output_zero_point, DstScalar clamp_min, DstScalar clamp_max,
-      int col_start)
+      const int32_t* lhs_sums, int col_start)
       : lhs_(lhs),
         lhs_rows_(lhs_rows),
         depth_(depth),
@@ -149,9 +149,10 @@ struct RvvGemmQuantizedTask : cpu_backend_threadpool::Task {
         multiplier_perchannel_(multiplier_perchannel),
         shift_perchannel_(shift_perchannel),
         output_zero_point_(output_zero_point),
-        clamp_min_(clamp_min),
-        clamp_max_(clamp_max),
-        col_start_(col_start) {}
+         clamp_min_(clamp_min),
+         clamp_max_(clamp_max),
+         lhs_sums_(lhs_sums),
+         col_start_(col_start) {}
 
   void Run() override {
     rvv_optimized_ops::RvvGemmQuantized<LhsScalar, RhsScalar, DstScalar>(
@@ -159,7 +160,8 @@ struct RvvGemmQuantizedTask : cpu_backend_threadpool::Task {
         rhs_ + static_cast<std::size_t>(col_start_) * depth_, cols_,
         rhs_zero_point_, dst_ + static_cast<std::size_t>(col_start_) * lhs_rows_,
         bias_, multiplier_, multiplier_shift_, multiplier_perchannel_,
-        shift_perchannel_, output_zero_point_, clamp_min_, clamp_max_);
+         shift_perchannel_, output_zero_point_, clamp_min_, clamp_max_,
+         lhs_sums_);
   }
 
   const LhsScalar* lhs_;
@@ -178,6 +180,7 @@ struct RvvGemmQuantizedTask : cpu_backend_threadpool::Task {
   int32_t output_zero_point_;
   DstScalar clamp_min_;
   DstScalar clamp_max_;
+  const int32_t* lhs_sums_;
   int col_start_;
 };
 
@@ -193,7 +196,11 @@ inline void RvvGemmQuantizedThreaded(
       lhs_rows, depth, cols,
       context == nullptr ? 1 : context->max_num_threads(),
       kRvvQuantizedGemmThreadingMinMacs);
-  if (thread_count == 1) {
+  // Every task must retain at least one 2-column tile; splitting a narrow N
+  // across more workers silently disables the RVV 2x2 dispatch.
+  const int pair_thread_count = std::max(1, cols / 2);
+  const int bounded_thread_count = std::min(thread_count, pair_thread_count);
+  if (bounded_thread_count == 1) {
     rvv_optimized_ops::RvvGemmQuantized<LhsScalar, RhsScalar, DstScalar>(
         lhs, lhs_rows, depth, lhs_zero_point, rhs, cols, rhs_zero_point, dst,
         bias, multiplier, multiplier_shift, multiplier_perchannel,
@@ -201,16 +208,31 @@ inline void RvvGemmQuantizedThreaded(
     return;
   }
 
+  std::vector<int32_t> lhs_sums;
+  const int32_t* lhs_sum_data = nullptr;
+  if constexpr (std::is_same_v<LhsScalar, int8_t> &&
+                std::is_same_v<RhsScalar, int8_t> &&
+                std::is_same_v<DstScalar, int8_t>) {
+    if (lhs_zero_point == 0 && rhs_zero_point != 0 &&
+        tensor_utils::RvvVlenClassBits() >= 256 && lhs_rows >= 8 &&
+        depth >= 16) {
+      lhs_sums.resize(lhs_rows);
+      for (int row = 0; row < lhs_rows; ++row)
+        for (int i = 0; i < depth; ++i) lhs_sums[row] += lhs[row * depth + i];
+      lhs_sum_data = lhs_sums.data();
+    }
+  }
+
   std::vector<RvvGemmQuantizedTask<LhsScalar, RhsScalar, DstScalar>> tasks;
-  tasks.reserve(thread_count);
-  for (int task = 0; task < thread_count; ++task) {
-    const int col_start = task * cols / thread_count;
-    const int col_end = (task + 1) * cols / thread_count;
+  tasks.reserve(bounded_thread_count);
+  for (int task = 0; task < bounded_thread_count; ++task) {
+    const int col_start = task * cols / bounded_thread_count;
+    const int col_end = (task + 1) * cols / bounded_thread_count;
     tasks.emplace_back(
         lhs, lhs_rows, depth, lhs_zero_point, rhs, col_end - col_start,
         rhs_zero_point, dst, bias, multiplier, multiplier_shift,
         multiplier_perchannel, shift_perchannel, output_zero_point, clamp_min,
-        clamp_max, col_start);
+         clamp_max, lhs_sum_data, col_start);
   }
   cpu_backend_threadpool::Execute(tasks.size(), tasks.data(), context);
 }
@@ -365,14 +387,15 @@ void Gemm(const MatrixParams<LhsScalar>& lhs_params, const LhsScalar* lhs_data,
                             QuantizationFlavor::kIntegerWithUniformMultiplier ||
                         quantization_flavor ==
                             QuantizationFlavor::kIntegerWithPerRowMultiplier)) {
-    // 3M covers every layer of the six benchmark models; larger products keep
-    // the original backend path until they have an independent benchmark.
-    constexpr std::int64_t kRvvQuantizedGemmMaxOutputElements = 3000000;
+    // VLEN=128 wins on the large early convolutions; wider VLENs keep the
+    // conservative gate until their larger kernel has an independent win.
+    const std::int64_t max_output_elements =
+        tensor_utils::RvvVlenClassBits() == 128 ? 16000000 : 3000000;
     if (lhs_params.order == Order::kRowMajor &&
         rhs_params.order == Order::kColMajor &&
         dst_params.order == Order::kColMajor && !context->use_caching() &&
         static_cast<std::int64_t>(lhs_params.rows) * rhs_params.cols <=
-            kRvvQuantizedGemmMaxOutputElements) {
+            max_output_elements) {
       detail::RvvGemmQuantizedThreaded(
           lhs_data, lhs_params.rows, lhs_params.cols,
           static_cast<int>(lhs_params.zero_point), rhs_data, rhs_params.cols,

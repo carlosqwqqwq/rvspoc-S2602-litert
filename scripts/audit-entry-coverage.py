@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Audit the 61 ARM optimized entry mappings against a patched source tree."""
 
 from pathlib import Path

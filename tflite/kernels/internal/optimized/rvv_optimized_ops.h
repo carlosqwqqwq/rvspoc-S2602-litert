@@ -23,6 +23,7 @@ limitations under the License.
 #include <cstdint>
 #include <limits>
 #include <type_traits>
+#include <vector>
 
 #include <riscv_vector.h>
 
@@ -42,6 +43,117 @@ inline size_t RvvSetVlE8M1(size_t avl) {
   return __riscv_vsetvl_e8m1(avl);
 }
 
+inline void RvvSetVlE16M2Asm(size_t vl) {
+  asm volatile("vsetvli zero, %0, e16, m2, tu, ma" : : "r"(vl) : "memory");
+}
+
+// The caller sets e16,m2 before this group; keeping the widening operations in
+// asm prevents GCC 13 from repeating vsetvli before every extend instruction.
+inline vint8m1_t RvvLoadI8M1(const int8_t* data) {
+  vint8m1_t value;
+  asm volatile("vle8.v %0, (%1)"
+               : "=vr"(value)
+               : "r"(data));
+  return value;
+}
+
+inline vuint8m1_t RvvLoadU8M1(const uint8_t* data) {
+  vuint8m1_t value;
+  asm volatile("vle8.v %0, (%1)"
+               : "=vr"(value)
+               : "r"(data));
+  return value;
+}
+
+inline vint16m2_t RvvSextI8M1ToI16M2(vint8m1_t value) {
+  vint16m2_t result;
+  asm volatile("vsext.vf2 %0, %1" : "=&vr"(result) : "vr"(value));
+  return result;
+}
+
+inline vint16m2_t RvvZextU8M1ToI16M2(vuint8m1_t value) {
+  vuint16m2_t result;
+  asm volatile("vzext.vf2 %0, %1" : "=&vr"(result) : "vr"(value));
+  return __riscv_vreinterpret_v_u16m2_i16m2(result);
+}
+
+inline vint16m2_t RvvSubI16M2(vint16m2_t value, int32_t scalar) {
+  asm volatile("vsub.vx %0, %0, %1" : "+vr"(value) : "r"(scalar));
+  return value;
+}
+
+inline vint32m4_t RvvWmaccI16M2(vint32m4_t acc, vint16m2_t lhs,
+                                vint16m2_t rhs) {
+  asm volatile("vwmacc.vv %0, %1, %2"
+               : "+&vr"(acc)
+               : "vr"(lhs), "vr"(rhs));
+  return acc;
+}
+
+// One block keeps the accumulator vtype transition adjacent to its widening
+// loads; fixed temporaries avoid GCC inserting an e32 vtype between them.
+inline void RvvGemmQuantized2x2Step(
+    vint32m4_t& acc00, vint32m4_t& acc01, vint32m4_t& acc10,
+    vint32m4_t& acc11, const int8_t* lhs0, const int8_t* lhs1,
+    const int8_t* rhs0, const int8_t* rhs1, int32_t lhs_zero_point,
+    int32_t rhs_zero_point) {
+  asm volatile(
+      "vle8.v v8, (%[lhs0])\n\t"
+      "vsext.vf2 v0, v8\n\t"
+      "vle8.v v8, (%[lhs1])\n\t"
+      "vsext.vf2 v2, v8\n\t"
+      "vle8.v v8, (%[rhs0])\n\t"
+      "vsext.vf2 v4, v8\n\t"
+      "vle8.v v8, (%[rhs1])\n\t"
+      "vsext.vf2 v6, v8\n\t"
+      "beqz %[lhs_zp], 1f\n\t"
+      "vsub.vx v0, v0, %[lhs_zp]\n\t"
+      "vsub.vx v2, v2, %[lhs_zp]\n\t"
+      "1:\n\t"
+      "beqz %[rhs_zp], 2f\n\t"
+      "vsub.vx v4, v4, %[rhs_zp]\n\t"
+      "vsub.vx v6, v6, %[rhs_zp]\n\t"
+      "2:\n\t"
+      "vwmacc.vv %[acc00], v0, v4\n\t"
+      "vwmacc.vv %[acc01], v2, v4\n\t"
+      "vwmacc.vv %[acc10], v0, v6\n\t"
+      "vwmacc.vv %[acc11], v2, v6"
+      : [acc00] "+&vr"(acc00), [acc01] "+&vr"(acc01),
+        [acc10] "+&vr"(acc10), [acc11] "+&vr"(acc11)
+      : [lhs0] "r"(lhs0), [lhs1] "r"(lhs1), [rhs0] "r"(rhs0),
+        [rhs1] "r"(rhs1), [lhs_zp] "r"(lhs_zero_point),
+        [rhs_zp] "r"(rhs_zero_point)
+      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8",
+        "memory");
+}
+
+// Raw signed inputs are used when the filter zero point is zero and the input
+// zero point is either zero or folded into a row-sum correction.
+inline void RvvGemmQuantized2x2RawStep(
+    vint32m4_t& acc00, vint32m4_t& acc01, vint32m4_t& acc10,
+    vint32m4_t& acc11, const int8_t* lhs0, const int8_t* lhs1,
+    const int8_t* rhs0, const int8_t* rhs1) {
+  asm volatile(
+      "vle8.v v8, (%[lhs0])\n\t"
+      "vsext.vf2 v0, v8\n\t"
+      "vle8.v v8, (%[lhs1])\n\t"
+      "vsext.vf2 v2, v8\n\t"
+      "vle8.v v8, (%[rhs0])\n\t"
+      "vsext.vf2 v4, v8\n\t"
+      "vle8.v v8, (%[rhs1])\n\t"
+      "vsext.vf2 v6, v8\n\t"
+      "vwmacc.vv %[acc00], v0, v4\n\t"
+      "vwmacc.vv %[acc01], v2, v4\n\t"
+      "vwmacc.vv %[acc10], v0, v6\n\t"
+      "vwmacc.vv %[acc11], v2, v6"
+      : [acc00] "+&vr"(acc00), [acc01] "+&vr"(acc01),
+        [acc10] "+&vr"(acc10), [acc11] "+&vr"(acc11)
+      : [lhs0] "r"(lhs0), [lhs1] "r"(lhs1), [rhs0] "r"(rhs0),
+        [rhs1] "r"(rhs1)
+      : "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8",
+        "memory");
+}
+
 inline size_t RvvSetVlE8M1Stack(size_t avl) {
   return __riscv_vsetvl_e8m1(std::min(avl, kMaxStackVectorLanes));
 }
@@ -52,6 +164,33 @@ inline size_t RvvSetVlE8M1Stack(size_t avl) {
 inline size_t RvvSetVlE32M4ForQuantize(size_t avl, bool vectorized) {
   return __riscv_vsetvl_e32m4(
       vectorized ? avl : std::min(avl, kMaxStackVectorLanes));
+}
+
+inline vint16m2_t RvvLoadU8ToI16(const uint8_t* data, int zero_point,
+                                 size_t vl) {
+  const vuint8m1_t values = __riscv_vle8_v_u8m1(data, vl);
+  if (zero_point == 0) {
+    return __riscv_vreinterpret_v_u16m2_i16m2(
+        __riscv_vzext_vf2_u16m2(values, vl));
+  }
+  if (zero_point == 128) {
+    return __riscv_vsext_vf2_i16m2(
+        __riscv_vreinterpret_v_u8m1_i8m1(
+            __riscv_vxor_vx_u8m1(values, 128, vl)),
+        vl);
+  }
+  return __riscv_vreinterpret_v_u16m2_i16m2(__riscv_vsub_vx_u16m2(
+      __riscv_vzext_vf2_u16m2(values, vl), static_cast<uint16_t>(zero_point),
+      vl));
+}
+
+inline vint16m2_t RvvLoadI8ToI16(const int8_t* data, int zero_point,
+                                 size_t vl) {
+  const vint16m2_t value = __riscv_vsext_vf2_i16m2(
+      __riscv_vle8_v_i8m1(data, vl), vl);
+  return zero_point == 0
+             ? value
+             : __riscv_vsub_vx_i16m2(value, zero_point, vl);
 }
 
 inline vint32m4_t RvvVectorizedQuantize(vint32m4_t value,
@@ -569,7 +708,6 @@ inline void RvvGemmFloat(const float* lhs, int lhs_rows, int depth,
   }
   // Use the unordered reduction to enable the hardware tree; FP32 inference
   // tolerates its reassociated accumulation.
-#if !defined(TFLITE_RVV_GEMM_ROWOUTER)
   if (depth < 16) {
     for (int col = 0; col < cols; ++col) {
       for (int row = 0; row < lhs_rows; ++row) {
@@ -589,153 +727,16 @@ inline void RvvGemmFloat(const float* lhs, int lhs_rows, int depth,
     }
     return;
   }
-#endif
 
   // Share each RHS vector across four output channels for large products. The
   // tail block handles 1-3 remaining rows; small products keep the simpler
   // single-output path below.
-#if !defined(TFLITE_RVV_GEMM_ROWOUTER)
-  if (tensor_utils::RvvVlenClassBits() >= 256 && depth >= 16 && lhs_rows >= 4 &&
+  if (depth >= 16 && lhs_rows >= 4 &&
       static_cast<int64_t>(lhs_rows) * depth * cols >= 32768) {
     RvvGemmFloatChannelTiled(lhs, lhs_rows, depth, rhs, cols, dst, bias,
                              clamp_min, clamp_max);
     return;
   }
-#endif
-
-  // Experimental row-outer variant: hoist the lhs row vector load out of the
-  // column loop so each lhs row is loaded from memory exactly once and reused
-  // across all columns, and process kColBlock output columns per pass to
-  // amortize the reduction. On VLEN>=256 use m2
-  // registers; VLEN=128 keeps m1. Disabled by default: measured regression on
-  // Spacemit X60 (FP32 GEMM is vfmacc-throughput-bound, extra register
-  // pressure from multiple accumulators hurts), kept for QEMU functional
-  // verification and for A/B retesting on other RV64GCV hardware.
-#if defined(TFLITE_RVV_GEMM_ROWOUTER)
-  constexpr int kColBlock = 2;
-  if (tensor_utils::RvvVlenClassBits() >= 256) {
-    const size_t vlmax = __riscv_vsetvl_e32m2(depth);
-    for (int row = 0; row < lhs_rows; ++row) {
-      int col = 0;
-      for (; col + kColBlock <= cols; col += kColBlock) {
-        vfloat32m2_t accum0 = __riscv_vfmv_v_f_f32m2(0.0f, vlmax);
-        vfloat32m2_t accum1 = __riscv_vfmv_v_f_f32m2(0.0f, vlmax);
-        int depth_offset = 0;
-        while (depth_offset < depth) {
-          const size_t remaining = depth - depth_offset;
-          const size_t vl = remaining < vlmax
-                                ? __riscv_vsetvl_e32m2(remaining)
-                                : vlmax;
-          const vfloat32m2_t lhs_v = __riscv_vle32_v_f32m2(
-              lhs + row * depth + depth_offset, vl);
-          accum0 = __riscv_vfmacc_vv_f32m2_tu(
-              accum0, lhs_v,
-              __riscv_vle32_v_f32m2(rhs + (col + 0) * depth + depth_offset, vl),
-              vl);
-          accum1 = __riscv_vfmacc_vv_f32m2_tu(
-              accum1, lhs_v,
-              __riscv_vle32_v_f32m2(rhs + (col + 1) * depth + depth_offset, vl),
-              vl);
-          depth_offset += static_cast<int>(vl);
-        }
-        const vfloat32m1_t zero = __riscv_vfmv_s_f_f32m1(0.0f, vlmax);
-        float sum0 = bias == nullptr ? 0.0f : bias[row];
-        float sum1 = sum0;
-        sum0 += __riscv_vfmv_f_s_f32m1_f32(
-            __riscv_vfredusum_vs_f32m2_f32m1(accum0, zero, vlmax));
-        sum1 += __riscv_vfmv_f_s_f32m1_f32(
-            __riscv_vfredusum_vs_f32m2_f32m1(accum1, zero, vlmax));
-        dst[row + (col + 0) * lhs_rows] =
-            std::max(clamp_min, std::min(clamp_max, sum0));
-        dst[row + (col + 1) * lhs_rows] =
-            std::max(clamp_min, std::min(clamp_max, sum1));
-      }
-      for (; col < cols; ++col) {
-        float sum = bias == nullptr ? 0.0f : bias[row];
-        vfloat32m2_t accum = __riscv_vfmv_v_f_f32m2(0.0f, vlmax);
-        int depth_offset = 0;
-        while (depth_offset < depth) {
-          const size_t remaining = depth - depth_offset;
-          const size_t vl = remaining < vlmax
-                                ? __riscv_vsetvl_e32m2(remaining)
-                                : vlmax;
-          accum = __riscv_vfmacc_vv_f32m2_tu(
-              accum, __riscv_vle32_v_f32m2(lhs + row * depth + depth_offset,
-                                           vl),
-              __riscv_vle32_v_f32m2(rhs + col * depth + depth_offset, vl), vl);
-          depth_offset += static_cast<int>(vl);
-        }
-        const vfloat32m1_t zero = __riscv_vfmv_s_f_f32m1(0.0f, vlmax);
-        sum += __riscv_vfmv_f_s_f32m1_f32(
-            __riscv_vfredusum_vs_f32m2_f32m1(accum, zero, vlmax));
-        dst[row + col * lhs_rows] =
-            std::max(clamp_min, std::min(clamp_max, sum));
-      }
-    }
-    return;
-  } else {
-    const size_t vlmax = __riscv_vsetvl_e32m1(depth);
-    for (int row = 0; row < lhs_rows; ++row) {
-      int col = 0;
-      for (; col + kColBlock <= cols; col += kColBlock) {
-        vfloat32m1_t accum0 = __riscv_vfmv_v_f_f32m1(0.0f, vlmax);
-        vfloat32m1_t accum1 = __riscv_vfmv_v_f_f32m1(0.0f, vlmax);
-        int depth_offset = 0;
-        while (depth_offset < depth) {
-          const size_t remaining = depth - depth_offset;
-          const size_t vl = remaining < vlmax
-                                ? __riscv_vsetvl_e32m1(remaining)
-                                : vlmax;
-          const vfloat32m1_t lhs_v = __riscv_vle32_v_f32m1(
-              lhs + row * depth + depth_offset, vl);
-          accum0 = __riscv_vfmacc_vv_f32m1_tu(
-              accum0, lhs_v,
-              __riscv_vle32_v_f32m1(rhs + (col + 0) * depth + depth_offset, vl),
-              vl);
-          accum1 = __riscv_vfmacc_vv_f32m1_tu(
-              accum1, lhs_v,
-              __riscv_vle32_v_f32m1(rhs + (col + 1) * depth + depth_offset, vl),
-              vl);
-          depth_offset += static_cast<int>(vl);
-        }
-        const vfloat32m1_t zero = __riscv_vfmv_s_f_f32m1(0.0f, vlmax);
-        float sum0 = bias == nullptr ? 0.0f : bias[row];
-        float sum1 = sum0;
-        sum0 += __riscv_vfmv_f_s_f32m1_f32(
-            __riscv_vfredusum_vs_f32m1_f32m1(accum0, zero, vlmax));
-        sum1 += __riscv_vfmv_f_s_f32m1_f32(
-            __riscv_vfredusum_vs_f32m1_f32m1(accum1, zero, vlmax));
-        dst[row + (col + 0) * lhs_rows] =
-            std::max(clamp_min, std::min(clamp_max, sum0));
-        dst[row + (col + 1) * lhs_rows] =
-            std::max(clamp_min, std::min(clamp_max, sum1));
-      }
-      for (; col < cols; ++col) {
-        float sum = bias == nullptr ? 0.0f : bias[row];
-        vfloat32m1_t accum = __riscv_vfmv_v_f_f32m1(0.0f, vlmax);
-        int depth_offset = 0;
-        while (depth_offset < depth) {
-          const size_t remaining = depth - depth_offset;
-          const size_t vl = remaining < vlmax
-                                ? __riscv_vsetvl_e32m1(remaining)
-                                : vlmax;
-          accum = __riscv_vfmacc_vv_f32m1_tu(
-              accum, __riscv_vle32_v_f32m1(lhs + row * depth + depth_offset,
-                                           vl),
-              __riscv_vle32_v_f32m1(rhs + col * depth + depth_offset, vl), vl);
-          depth_offset += static_cast<int>(vl);
-        }
-        const vfloat32m1_t zero = __riscv_vfmv_s_f_f32m1(0.0f, vlmax);
-        sum += __riscv_vfmv_f_s_f32m1_f32(
-            __riscv_vfredusum_vs_f32m1_f32m1(accum, zero, vlmax));
-        dst[row + col * lhs_rows] =
-            std::max(clamp_min, std::min(clamp_max, sum));
-      }
-    }
-    return;
-  }
-#endif  // TFLITE_RVV_GEMM_ROWOUTER
-
   // Runtime dispatch on hardware VLEN: on VLEN>=256 use a wider register
   // group (m2) so each vector iteration covers more elements and reduces
   // loop/instruction overhead; VLEN=128 keeps the m1 path that best fits the
@@ -795,15 +796,35 @@ inline void RvvGemmFloat(const float* lhs, int lhs_rows, int depth,
   }
 }
 
-inline void RvvGemmQuantized2x2Int8(
+// Raw int8 GEMM with a zero filter point.  Keep the tile loop in this function
+// so GCC does not lower the hot 2x2 body to an indirect lambda call.
+void
+RvvGemmQuantized2x2Int8(
     const int8_t* lhs, int lhs_rows, int depth, int lhs_zero_point,
     const int8_t* rhs, int cols, int rhs_zero_point, int8_t* dst,
     const int32_t* bias, int32_t multiplier, int multiplier_shift,
     const int32_t* multiplier_perchannel, const int* shift_perchannel,
-    int32_t output_zero_point, int8_t clamp_min, int8_t clamp_max) {
-  const size_t vlmax = __riscv_vsetvl_e8m1(depth);
-  // Keep the full-depth VL across complete chunks; only a short tail needs a
-  // new vsetvl, which removes one CSR setup per chunk on pointwise GEMMs.
+    int32_t output_zero_point, int8_t clamp_min, int8_t clamp_max,
+    bool raw_inputs, bool fold_rhs_zero_point);
+
+template <bool kFoldRhsZeroPoint>
+inline __attribute__((noinline, no_stack_protector)) void
+RvvGemmQuantized2x2Int8Raw(
+    const int8_t* lhs, int lhs_rows, int depth, const int8_t* rhs, int cols,
+    int32_t rhs_zero_point, int8_t* dst, const int32_t* bias,
+    int32_t multiplier, int multiplier_shift,
+    const int32_t* multiplier_perchannel, const int* shift_perchannel,
+    int32_t output_zero_point, int8_t clamp_min, int8_t clamp_max,
+    const int32_t* lhs_sums = nullptr) {
+  const size_t vlmax = __riscv_vsetvl_e16m2(depth);
+  if (depth <= vlmax) {
+    RvvGemmQuantized2x2Int8(
+        lhs, lhs_rows, depth, 0, rhs, cols, rhs_zero_point, dst, bias,
+        multiplier, multiplier_shift, multiplier_perchannel,
+        shift_perchannel, output_zero_point, clamp_min, clamp_max, true,
+        kFoldRhsZeroPoint);
+    return;
+  }
   const auto quantize = [&](int32_t sum, int row) {
     const int32_t row_multiplier = multiplier_perchannel == nullptr
                                        ? multiplier
@@ -817,101 +838,174 @@ inline void RvvGemmQuantized2x2Int8(
     return std::max(static_cast<int32_t>(clamp_min),
                     std::min(static_cast<int32_t>(clamp_max), value));
   };
-  const auto load = [&](const int8_t* data, int offset, size_t vl) {
-    vint16m2_t value = __riscv_vsext_vf2_i16m2(
-        __riscv_vle8_v_i8m1(data + offset, vl), vl);
-    return value;
-  };
   const auto run_single = [&](int row, int col) {
+    const int8_t* lhs_row = lhs + static_cast<size_t>(row) * depth;
+    const int8_t* rhs_col = rhs + static_cast<size_t>(col) * depth;
     vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vlmax);
-    int32_t sum = bias == nullptr ? 0 : bias[row];
+    int32_t lhs_sum = 0;
+    if constexpr (kFoldRhsZeroPoint) {
+      if (lhs_sums) {
+        lhs_sum = lhs_sums[row];
+      } else {
+        for (int i = 0; i < depth; ++i) lhs_sum += lhs_row[i];
+      }
+    }
+    RvvSetVlE16M2Asm(vlmax);
+    int offset = 0;
     for (int offset = 0; offset < depth;) {
-      const size_t vl = depth - offset < vlmax
-                            ? __riscv_vsetvl_e8m1(depth - offset)
-                            : vlmax;
-      vint16m2_t lhs16 = load(lhs + row * depth, offset, vl);
-      vint16m2_t rhs16 = load(rhs + col * depth, offset, vl);
-      if (lhs_zero_point != 0)
-        lhs16 = __riscv_vsub_vx_i16m2(lhs16, lhs_zero_point, vl);
-      if (rhs_zero_point != 0)
-        rhs16 = __riscv_vsub_vx_i16m2(rhs16, rhs_zero_point, vl);
-      acc = __riscv_vwmacc_vv_i32m4_tu(acc, lhs16, rhs16, vl);
+      const size_t vl = std::min(static_cast<size_t>(depth - offset), vlmax);
+      if (vl != vlmax) RvvSetVlE16M2Asm(vl);
+      const vint16m2_t lhs16 = __riscv_vsext_vf2_i16m2(
+          __riscv_vle8_v_i8m1(lhs_row + offset, vl), vl);
+      const vint16m2_t rhs16 = __riscv_vsext_vf2_i16m2(
+          __riscv_vle8_v_i8m1(rhs_col + offset, vl), vl);
+      acc = __riscv_vwmacc_vv_i32m4(acc, lhs16, rhs16, vl);
       offset += static_cast<int>(vl);
     }
     const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+    int32_t sum = bias == nullptr ? 0 : bias[row];
     sum += __riscv_vmv_x_s_i32m1_i32(
         __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
+    if constexpr (kFoldRhsZeroPoint) sum -= rhs_zero_point * lhs_sum;
     dst[row + col * lhs_rows] = static_cast<int8_t>(quantize(sum, row));
   };
-  const auto run_pair = [&](int row, int col) {
-    vint32m4_t acc00 = __riscv_vmv_v_x_i32m4(0, vlmax);
-    vint32m4_t acc01 = __riscv_vmv_v_x_i32m4(0, vlmax);
-    vint32m4_t acc10 = __riscv_vmv_v_x_i32m4(0, vlmax);
-    vint32m4_t acc11 = __riscv_vmv_v_x_i32m4(0, vlmax);
+  const int full_rows = lhs_rows & ~1;
+  const int full_cols = cols & ~1;
+  for (int row = 0; row < full_rows; row += 2) {
+    int32_t lhs_sum0 = 0;
+    int32_t lhs_sum1 = 0;
+    if constexpr (kFoldRhsZeroPoint) {
+      if (lhs_sums) {
+        lhs_sum0 = lhs_sums[row];
+        lhs_sum1 = lhs_sums[row + 1];
+      } else {
+        for (int i = 0; i < depth; ++i) {
+          lhs_sum0 += lhs[row * depth + i];
+          lhs_sum1 += lhs[(row + 1) * depth + i];
+        }
+      }
+    }
+    for (int col = 0; col < full_cols; col += 2) {
+      vint32m4_t acc00 = __riscv_vmv_v_x_i32m4(0, vlmax);
+      vint32m4_t acc01 = __riscv_vmv_v_x_i32m4(0, vlmax);
+      vint32m4_t acc10 = __riscv_vmv_v_x_i32m4(0, vlmax);
+      vint32m4_t acc11 = __riscv_vmv_v_x_i32m4(0, vlmax);
+      RvvSetVlE16M2Asm(vlmax);
+      for (int offset = 0; offset < depth;) {
+        const size_t vl = std::min(static_cast<size_t>(depth - offset), vlmax);
+        if (vl != vlmax) RvvSetVlE16M2Asm(vl);
+        RvvGemmQuantized2x2RawStep(
+            acc00, acc01, acc10, acc11, lhs + row * depth + offset,
+            lhs + (row + 1) * depth + offset, rhs + col * depth + offset,
+            rhs + (col + 1) * depth + offset);
+        offset += static_cast<int>(vl);
+      }
+      const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+      int32_t sum00 = bias == nullptr ? 0 : bias[row];
+      int32_t sum01 = bias == nullptr ? 0 : bias[row + 1];
+      int32_t sum10 = sum00;
+      int32_t sum11 = sum01;
+      sum00 += __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc00, zero, vlmax));
+      sum01 += __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc01, zero, vlmax));
+      sum10 += __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc10, zero, vlmax));
+      sum11 += __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc11, zero, vlmax));
+      if constexpr (kFoldRhsZeroPoint) {
+        sum00 -= rhs_zero_point * lhs_sum0;
+        sum01 -= rhs_zero_point * lhs_sum1;
+        sum10 -= rhs_zero_point * lhs_sum0;
+        sum11 -= rhs_zero_point * lhs_sum1;
+      }
+      dst[row + col * lhs_rows] = static_cast<int8_t>(quantize(sum00, row));
+      dst[row + 1 + col * lhs_rows] =
+          static_cast<int8_t>(quantize(sum01, row + 1));
+      dst[row + (col + 1) * lhs_rows] =
+          static_cast<int8_t>(quantize(sum10, row));
+      dst[row + 1 + (col + 1) * lhs_rows] =
+          static_cast<int8_t>(quantize(sum11, row + 1));
+    }
+  }
+  if (cols & 1)
+    for (int row = 0; row < full_rows; ++row) run_single(row, cols - 1);
+  if (lhs_rows & 1)
+    for (int col = 0; col < cols; ++col) run_single(lhs_rows - 1, col);
+}
+
+// For int8 GEMM with a zero filter point, move the input zero-point correction
+// out of the K loop: sum((lhs-zp)*rhs) = sum(lhs*rhs) - zp*sum(rhs).
+inline __attribute__((noinline, no_stack_protector)) void
+RvvGemmQuantized2x2Int8FoldLhs(
+    const int8_t* lhs, int lhs_rows, int depth, int lhs_zero_point,
+    const int8_t* rhs, int cols, int8_t* dst, const int32_t* bias,
+    int32_t multiplier, int multiplier_shift,
+    const int32_t* multiplier_perchannel, const int* shift_perchannel,
+    int32_t output_zero_point, int8_t clamp_min, int8_t clamp_max) {
+  const size_t vlmax = __riscv_vsetvl_e16m2(depth);
+  std::vector<int32_t> rhs_corrections(cols);
+  for (int col = 0; col < cols; ++col) {
+    int32_t rhs_sum = 0;
+    for (int i = 0; i < depth; ++i) rhs_sum += rhs[col * depth + i];
+    rhs_corrections[col] = lhs_zero_point * rhs_sum;
+  }
+  const auto quantize = [&](int32_t sum, int row, int col) {
+    const int32_t row_multiplier = multiplier_perchannel == nullptr
+                                       ? multiplier
+                                       : multiplier_perchannel[row];
+    const int row_shift = shift_perchannel == nullptr
+                              ? multiplier_shift
+                              : shift_perchannel[row];
+    int32_t value = MultiplyByRuyQuantizedMultiplier(
+        sum - rhs_corrections[col], row_multiplier, row_shift);
+    value += output_zero_point;
+    return std::max(static_cast<int32_t>(clamp_min),
+                    std::min(static_cast<int32_t>(clamp_max), value));
+  };
+  const auto load = [&](const int8_t* data, int offset, size_t vl) {
+    return __riscv_vsext_vf2_i16m2(
+        __riscv_vle8_v_i8m1(data + offset, vl), vl);
+  };
+  const auto run_single = [&](int row, int col) {
+    const int8_t* lhs_row = lhs + static_cast<size_t>(row) * depth;
+    const int8_t* rhs_col = rhs + static_cast<size_t>(col) * depth;
+    vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vlmax);
+    RvvSetVlE16M2Asm(vlmax);
     for (int offset = 0; offset < depth;) {
-      const size_t vl = depth - offset < vlmax
-                            ? __riscv_vsetvl_e8m1(depth - offset)
-                            : vlmax;
-      vint16m2_t lhs0 = load(lhs + row * depth, offset, vl);
-      vint16m2_t lhs1 = load(lhs + (row + 1) * depth, offset, vl);
-      vint16m2_t rhs0 = load(rhs + col * depth, offset, vl);
-      vint16m2_t rhs1 = load(rhs + (col + 1) * depth, offset, vl);
-      if (lhs_zero_point != 0) {
-        lhs0 = __riscv_vsub_vx_i16m2(lhs0, lhs_zero_point, vl);
-        lhs1 = __riscv_vsub_vx_i16m2(lhs1, lhs_zero_point, vl);
-      }
-      if (rhs_zero_point != 0) {
-        rhs0 = __riscv_vsub_vx_i16m2(rhs0, rhs_zero_point, vl);
-        rhs1 = __riscv_vsub_vx_i16m2(rhs1, rhs_zero_point, vl);
-      }
-      acc00 = __riscv_vwmacc_vv_i32m4_tu(acc00, lhs0, rhs0, vl);
-      acc01 = __riscv_vwmacc_vv_i32m4_tu(acc01, lhs1, rhs0, vl);
-      acc10 = __riscv_vwmacc_vv_i32m4_tu(acc10, lhs0, rhs1, vl);
-      acc11 = __riscv_vwmacc_vv_i32m4_tu(acc11, lhs1, rhs1, vl);
+      const size_t vl = std::min(static_cast<size_t>(depth - offset), vlmax);
+      if (vl != vlmax) RvvSetVlE16M2Asm(vl);
+      acc = __riscv_vwmacc_vv_i32m4(
+          acc, load(lhs_row, offset, vl), load(rhs_col, offset, vl), vl);
       offset += static_cast<int>(vl);
     }
     const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
-    const auto reduce = [&](vint32m4_t acc, int out_row) {
-      int32_t sum = bias == nullptr ? 0 : bias[out_row];
-      sum += __riscv_vmv_x_s_i32m1_i32(
-          __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
-      return static_cast<int8_t>(quantize(sum, out_row));
-    };
-    dst[row + col * lhs_rows] = reduce(acc00, row);
-    dst[row + 1 + col * lhs_rows] = reduce(acc01, row + 1);
-    dst[row + (col + 1) * lhs_rows] = reduce(acc10, row);
-    dst[row + 1 + (col + 1) * lhs_rows] = reduce(acc11, row + 1);
+    int32_t sum = bias == nullptr ? 0 : bias[row];
+    sum += __riscv_vmv_x_s_i32m1_i32(
+        __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
+    dst[row + col * lhs_rows] =
+        static_cast<int8_t>(quantize(sum, row, col));
   };
-  // When K fits in one vector, keep four lhs and two rhs vectors live and
-  // emit eight outputs before reloading either operand.
   if (depth <= vlmax) {
     const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
     const auto emit = [&](vint16m2_t lhs_v, vint16m2_t rhs_v, int row,
                           int col) {
       vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vlmax);
-      acc = __riscv_vwmacc_vv_i32m4_tu(acc, lhs_v, rhs_v, vlmax);
+      acc = __riscv_vwmacc_vv_i32m4(acc, lhs_v, rhs_v, vlmax);
       int32_t sum = bias == nullptr ? 0 : bias[row];
       sum += __riscv_vmv_x_s_i32m1_i32(
           __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
-      dst[row + col * lhs_rows] = static_cast<int8_t>(quantize(sum, row));
+      dst[row + col * lhs_rows] =
+          static_cast<int8_t>(quantize(sum, row, col));
     };
     const auto run_four_by_two = [&](int row, int col) {
+      RvvSetVlE16M2Asm(vlmax);
       vint16m2_t lhs0 = load(lhs + row * depth, 0, vlmax);
       vint16m2_t lhs1 = load(lhs + (row + 1) * depth, 0, vlmax);
       vint16m2_t lhs2 = load(lhs + (row + 2) * depth, 0, vlmax);
       vint16m2_t lhs3 = load(lhs + (row + 3) * depth, 0, vlmax);
       vint16m2_t rhs0 = load(rhs + col * depth, 0, vlmax);
       vint16m2_t rhs1 = load(rhs + (col + 1) * depth, 0, vlmax);
-      if (lhs_zero_point != 0) {
-        lhs0 = __riscv_vsub_vx_i16m2(lhs0, lhs_zero_point, vlmax);
-        lhs1 = __riscv_vsub_vx_i16m2(lhs1, lhs_zero_point, vlmax);
-        lhs2 = __riscv_vsub_vx_i16m2(lhs2, lhs_zero_point, vlmax);
-        lhs3 = __riscv_vsub_vx_i16m2(lhs3, lhs_zero_point, vlmax);
-      }
-      if (rhs_zero_point != 0) {
-        rhs0 = __riscv_vsub_vx_i16m2(rhs0, rhs_zero_point, vlmax);
-        rhs1 = __riscv_vsub_vx_i16m2(rhs1, rhs_zero_point, vlmax);
-      }
       emit(lhs0, rhs0, row, col);
       emit(lhs1, rhs0, row + 1, col);
       emit(lhs2, rhs0, row + 2, col);
@@ -932,30 +1026,435 @@ inline void RvvGemmQuantized2x2Int8(
       for (int row = 0; row < full_rows; ++row) run_single(row, cols - 1);
     return;
   }
+  const auto run_pair = [&](int row, int col) {
+    vint32m4_t acc00 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc01 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc10 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc11 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    RvvSetVlE16M2Asm(vlmax);
+    for (int offset = 0; offset < depth;) {
+      const size_t vl = std::min(static_cast<size_t>(depth - offset), vlmax);
+      if (vl != vlmax) RvvSetVlE16M2Asm(vl);
+      RvvGemmQuantized2x2RawStep(
+          acc00, acc01, acc10, acc11, lhs + row * depth + offset,
+          lhs + (row + 1) * depth + offset, rhs + col * depth + offset,
+          rhs + (col + 1) * depth + offset);
+      offset += static_cast<int>(vl);
+    }
+    const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+    const auto reduce = [&](vint32m4_t acc, int out_row, int out_col) {
+      int32_t sum = bias == nullptr ? 0 : bias[out_row];
+      sum += __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
+      dst[out_row + out_col * lhs_rows] =
+          static_cast<int8_t>(quantize(sum, out_row, out_col));
+    };
+    reduce(acc00, row, col);
+    reduce(acc01, row + 1, col);
+    reduce(acc10, row, col + 1);
+    reduce(acc11, row + 1, col + 1);
+  };
   for (int row = 0; row + 1 < lhs_rows; row += 2)
     for (int col = 0; col + 1 < cols; col += 2) run_pair(row, col);
+  if (cols & 1)
+    for (int row = 0; row + 1 < lhs_rows; row += 2) {
+      run_single(row, cols - 1);
+      run_single(row + 1, cols - 1);
+    }
+  if (lhs_rows & 1)
+    for (int col = 0; col < cols; ++col) run_single(lhs_rows - 1, col);
+}
+
+inline __attribute__((noinline, no_stack_protector)) void
+RvvGemmQuantized2x2Int8(
+    const int8_t* lhs, int lhs_rows, int depth, int lhs_zero_point,
+    const int8_t* rhs, int cols, int rhs_zero_point, int8_t* dst,
+    const int32_t* bias, int32_t multiplier, int multiplier_shift,
+    const int32_t* multiplier_perchannel, const int* shift_perchannel,
+    int32_t output_zero_point, int8_t clamp_min, int8_t clamp_max,
+    bool raw_inputs, bool fold_rhs_zero_point) {
+  const size_t vlmax = __riscv_vsetvl_e16m2(depth);
+  // Keep the full-depth VL across complete chunks; only a short tail needs a
+  // new vsetvl, which removes one CSR setup per chunk on pointwise GEMMs.
+  const auto quantize = [&](int32_t sum, int row) {
+    const int32_t row_multiplier = multiplier_perchannel == nullptr
+                                       ? multiplier
+                                       : multiplier_perchannel[row];
+    const int row_shift = shift_perchannel == nullptr
+                              ? multiplier_shift
+                              : shift_perchannel[row];
+    int32_t value = MultiplyByRuyQuantizedMultiplier(
+        sum, row_multiplier, row_shift);
+    value += output_zero_point;
+    return std::max(static_cast<int32_t>(clamp_min),
+                    std::min(static_cast<int32_t>(clamp_max), value));
+  };
+  const auto load = [&](const int8_t* data, int offset, size_t vl) {
+    return __riscv_vsext_vf2_i16m2(
+        __riscv_vle8_v_i8m1(data + offset, vl), vl);
+  };
+  const auto run_single = [&](int row, int col) {
+    const int8_t* lhs_row = lhs + static_cast<size_t>(row) * depth;
+    const int8_t* rhs_col = rhs + static_cast<size_t>(col) * depth;
+    vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vlmax);
+    RvvSetVlE16M2Asm(vlmax);
+    int32_t sum = bias == nullptr ? 0 : bias[row];
+    int32_t lhs_sum = 0;
+    if (fold_rhs_zero_point)
+      for (int i = 0; i < depth; ++i) lhs_sum += lhs_row[i];
+    for (int offset = 0; offset < depth;) {
+      const size_t vl = depth - offset < vlmax
+                            ? __riscv_vsetvl_e16m2(depth - offset)
+                            : vlmax;
+      if (vl != vlmax) RvvSetVlE16M2Asm(vl);
+      vint16m2_t lhs16 = load(lhs_row, offset, vl);
+      vint16m2_t rhs16 = load(rhs_col, offset, vl);
+      if (!raw_inputs) {
+        if (lhs_zero_point != 0)
+          lhs16 = __riscv_vsub_vx_i16m2(lhs16, lhs_zero_point, vl);
+        if (rhs_zero_point != 0)
+          rhs16 = __riscv_vsub_vx_i16m2(rhs16, rhs_zero_point, vl);
+      }
+      acc = __riscv_vwmacc_vv_i32m4(acc, lhs16, rhs16, vl);
+      offset += static_cast<int>(vl);
+    }
+    const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+    sum += __riscv_vmv_x_s_i32m1_i32(
+        __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
+    if (fold_rhs_zero_point) sum -= rhs_zero_point * lhs_sum;
+    dst[row + col * lhs_rows] = static_cast<int8_t>(quantize(sum, row));
+  };
+  const auto run_pair = [&](int row, int col, int32_t lhs_sum0,
+                            int32_t lhs_sum1) {
+    vint32m4_t acc00 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc01 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc10 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc11 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    RvvSetVlE16M2Asm(vlmax);
+    for (int offset = 0; offset < depth;) {
+      const size_t vl = depth - offset < vlmax
+                            ? __riscv_vsetvl_e16m2(depth - offset)
+                            : vlmax;
+      if (raw_inputs) {
+        RvvGemmQuantized2x2RawStep(
+            acc00, acc01, acc10, acc11, lhs + row * depth + offset,
+            lhs + (row + 1) * depth + offset, rhs + col * depth + offset,
+            rhs + (col + 1) * depth + offset);
+      } else {
+        RvvGemmQuantized2x2Step(
+            acc00, acc01, acc10, acc11, lhs + row * depth + offset,
+            lhs + (row + 1) * depth + offset, rhs + col * depth + offset,
+            rhs + (col + 1) * depth + offset, lhs_zero_point,
+            rhs_zero_point);
+      }
+      offset += static_cast<int>(vl);
+    }
+    const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+    const auto reduce = [&](vint32m4_t acc, int out_row) {
+      int32_t sum = bias == nullptr ? 0 : bias[out_row];
+      sum += __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
+      if (fold_rhs_zero_point)
+        sum -= rhs_zero_point * (out_row == row ? lhs_sum0 : lhs_sum1);
+      return static_cast<int8_t>(quantize(sum, out_row));
+    };
+    dst[row + col * lhs_rows] = reduce(acc00, row);
+    dst[row + 1 + col * lhs_rows] = reduce(acc01, row + 1);
+    dst[row + (col + 1) * lhs_rows] = reduce(acc10, row);
+    dst[row + 1 + (col + 1) * lhs_rows] = reduce(acc11, row + 1);
+  };
+  // When K fits in one vector, keep four lhs and two rhs vectors live and
+  // emit eight outputs before reloading either operand.
+  if (depth <= vlmax) {
+    const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+    const auto emit = [&](vint16m2_t lhs_v, vint16m2_t rhs_v, int row,
+                          int col, int32_t lhs_sum) {
+      vint32m4_t acc = __riscv_vmv_v_x_i32m4(0, vlmax);
+      acc = __riscv_vwmacc_vv_i32m4(acc, lhs_v, rhs_v, vlmax);
+      int32_t sum = bias == nullptr ? 0 : bias[row];
+      sum += __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
+      if (fold_rhs_zero_point) sum -= rhs_zero_point * lhs_sum;
+      dst[row + col * lhs_rows] = static_cast<int8_t>(quantize(sum, row));
+    };
+    const auto run_four_by_two = [&](int row, int col) {
+      RvvSetVlE16M2Asm(vlmax);
+      vint16m2_t lhs0 = load(lhs + row * depth, 0, vlmax);
+      vint16m2_t lhs1 = load(lhs + (row + 1) * depth, 0, vlmax);
+      vint16m2_t lhs2 = load(lhs + (row + 2) * depth, 0, vlmax);
+      vint16m2_t lhs3 = load(lhs + (row + 3) * depth, 0, vlmax);
+      vint16m2_t rhs0 = load(rhs + col * depth, 0, vlmax);
+      vint16m2_t rhs1 = load(rhs + (col + 1) * depth, 0, vlmax);
+      int32_t lhs_sum0 = 0;
+      int32_t lhs_sum1 = 0;
+      int32_t lhs_sum2 = 0;
+      int32_t lhs_sum3 = 0;
+      if (fold_rhs_zero_point) {
+        for (int i = 0; i < depth; ++i) {
+          lhs_sum0 += lhs[row * depth + i];
+          lhs_sum1 += lhs[(row + 1) * depth + i];
+          lhs_sum2 += lhs[(row + 2) * depth + i];
+          lhs_sum3 += lhs[(row + 3) * depth + i];
+        }
+      }
+      if (!raw_inputs && lhs_zero_point != 0) {
+        lhs0 = __riscv_vsub_vx_i16m2(lhs0, lhs_zero_point, vlmax);
+        lhs1 = __riscv_vsub_vx_i16m2(lhs1, lhs_zero_point, vlmax);
+        lhs2 = __riscv_vsub_vx_i16m2(lhs2, lhs_zero_point, vlmax);
+        lhs3 = __riscv_vsub_vx_i16m2(lhs3, lhs_zero_point, vlmax);
+      }
+      if (!raw_inputs && rhs_zero_point != 0) {
+        rhs0 = __riscv_vsub_vx_i16m2(rhs0, rhs_zero_point, vlmax);
+        rhs1 = __riscv_vsub_vx_i16m2(rhs1, rhs_zero_point, vlmax);
+      }
+      emit(lhs0, rhs0, row, col, lhs_sum0);
+      emit(lhs1, rhs0, row + 1, col, lhs_sum1);
+      emit(lhs2, rhs0, row + 2, col, lhs_sum2);
+      emit(lhs3, rhs0, row + 3, col, lhs_sum3);
+      emit(lhs0, rhs1, row, col + 1, lhs_sum0);
+      emit(lhs1, rhs1, row + 1, col + 1, lhs_sum1);
+      emit(lhs2, rhs1, row + 2, col + 1, lhs_sum2);
+      emit(lhs3, rhs1, row + 3, col + 1, lhs_sum3);
+    };
+    const int full_rows = lhs_rows & ~3;
+    const int full_cols = cols & ~1;
+    for (int row = 0; row < full_rows; row += 4)
+      for (int col = 0; col < full_cols; col += 2)
+        run_four_by_two(row, col);
+    for (int row = full_rows; row < lhs_rows; ++row)
+      for (int col = 0; col < cols; ++col) run_single(row, col);
+    if (cols & 1)
+      for (int row = 0; row < full_rows; ++row) run_single(row, cols - 1);
+    return;
+  }
+  for (int row = 0; row + 1 < lhs_rows; row += 2) {
+    int32_t lhs_sum0 = 0;
+    int32_t lhs_sum1 = 0;
+    if (fold_rhs_zero_point) {
+      for (int i = 0; i < depth; ++i) {
+        lhs_sum0 += lhs[row * depth + i];
+        lhs_sum1 += lhs[(row + 1) * depth + i];
+      }
+    }
+    for (int col = 0; col + 1 < cols; col += 2)
+      run_pair(row, col, lhs_sum0, lhs_sum1);
+  }
   if (cols & 1)
     for (int row = 0; row + 1 < lhs_rows; row += 2)
       run_single(row, cols - 1), run_single(row + 1, cols - 1);
   if (lhs_rows & 1)
     for (int col = 0; col < cols; ++col) run_single(lhs_rows - 1, col);
 }
+
+// Keep the VLEN=128 body out of the generic dispatch function. Besides
+// reducing code size, this avoids a GCC 13 RVV register-allocation failure in
+// the wider-VLEN fallback path.
+template <bool kLhsZeroPoint, bool kFoldRhsZeroPoint>
+inline __attribute__((noinline, no_stack_protector)) void
+RvvGemmQuantizedInt8Vlen128(
+    const int8_t* lhs, int lhs_rows, int depth, int lhs_zero_point,
+    const int8_t* rhs, int cols, int rhs_zero_point, int8_t* dst,
+    const int32_t* bias, int32_t multiplier, int multiplier_shift,
+    const int32_t* multiplier_perchannel, const int* shift_perchannel,
+    int32_t output_zero_point, int8_t clamp_min, int8_t clamp_max) {
+  const size_t vlmax = __riscv_vsetvl_e16m2(depth);
+  const auto quantize = [&](int32_t sum, int32_t row_multiplier,
+                            int row_shift) {
+    int32_t value = MultiplyByRuyQuantizedMultiplier(
+        sum, row_multiplier, row_shift);
+    value += output_zero_point;
+    return std::max(static_cast<int32_t>(clamp_min),
+                    std::min(static_cast<int32_t>(clamp_max), value));
+  };
+  const auto run_single = [&](int row, int col) {
+    const int8_t* lhs_row = lhs + static_cast<size_t>(row) * depth;
+    const int8_t* rhs_col = rhs + static_cast<size_t>(col) * depth;
+    const int32_t row_multiplier = multiplier_perchannel == nullptr
+                                       ? multiplier
+                                       : multiplier_perchannel[row];
+    const int row_shift = shift_perchannel == nullptr
+                              ? multiplier_shift
+                              : shift_perchannel[row];
+    vint32m4_t accum = __riscv_vmv_v_x_i32m4(0, vlmax);
+    RvvSetVlE16M2Asm(vlmax);
+    int32_t sum = bias == nullptr ? 0 : bias[row];
+    int32_t lhs_sum = 0;
+    if constexpr (kFoldRhsZeroPoint)
+      for (int i = 0; i < depth; ++i) lhs_sum += lhs_row[i];
+    for (int offset = 0; offset < depth;) {
+      const size_t vl = std::min(static_cast<size_t>(depth - offset), vlmax);
+      if (vl != vlmax) RvvSetVlE16M2Asm(vl);
+      vint16m2_t lhs16 = RvvSextI8M1ToI16M2(
+          RvvLoadI8M1(lhs_row + offset));
+      vint16m2_t rhs16 = RvvSextI8M1ToI16M2(
+          RvvLoadI8M1(rhs_col + offset));
+      if constexpr (!kLhsZeroPoint)
+        lhs16 = RvvSubI16M2(lhs16, lhs_zero_point);
+      if constexpr (!kFoldRhsZeroPoint)
+        if (rhs_zero_point != 0)
+          rhs16 = RvvSubI16M2(rhs16, rhs_zero_point);
+      accum = RvvWmaccI16M2(accum, lhs16, rhs16);
+      offset += static_cast<int>(vl);
+    }
+    const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+    sum += __riscv_vmv_x_s_i32m1_i32(
+        __riscv_vredsum_vs_i32m4_i32m1(accum, zero, vlmax));
+    if constexpr (kFoldRhsZeroPoint)
+      sum -= rhs_zero_point * lhs_sum;
+    dst[row + col * lhs_rows] =
+        static_cast<int8_t>(quantize(sum, row_multiplier, row_shift));
+  };
+  const auto run_pair = [&](int row, int col, int32_t lhs_sum0,
+                            int32_t lhs_sum1) {
+    const int32_t row_multiplier0 = multiplier_perchannel == nullptr
+                                        ? multiplier
+                                        : multiplier_perchannel[row];
+    const int32_t row_multiplier1 = multiplier_perchannel == nullptr
+                                        ? multiplier
+                                        : multiplier_perchannel[row + 1];
+    const int row_shift0 = shift_perchannel == nullptr
+                               ? multiplier_shift
+                               : shift_perchannel[row];
+    const int row_shift1 = shift_perchannel == nullptr
+                               ? multiplier_shift
+                               : shift_perchannel[row + 1];
+    const int32_t row_bias0 = bias == nullptr ? 0 : bias[row];
+    const int32_t row_bias1 = bias == nullptr ? 0 : bias[row + 1];
+    const int8_t* lhs0_ptr = lhs + static_cast<size_t>(row) * depth;
+    const int8_t* lhs1_ptr = lhs0_ptr + depth;
+    const int8_t* rhs0_ptr = rhs + static_cast<size_t>(col) * depth;
+    const int8_t* rhs1_ptr = rhs0_ptr + depth;
+    vint32m4_t acc00 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc01 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc10 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    vint32m4_t acc11 = __riscv_vmv_v_x_i32m4(0, vlmax);
+    RvvSetVlE16M2Asm(vlmax);
+    for (int offset = 0; offset < depth;) {
+      const size_t vl = std::min(static_cast<size_t>(depth - offset), vlmax);
+      if (vl != vlmax) RvvSetVlE16M2Asm(vl);
+      if constexpr (kLhsZeroPoint && kFoldRhsZeroPoint) {
+        RvvGemmQuantized2x2RawStep(
+            acc00, acc01, acc10, acc11, lhs0_ptr + offset, lhs1_ptr + offset,
+            rhs0_ptr + offset, rhs1_ptr + offset);
+      } else {
+        RvvGemmQuantized2x2Step(
+            acc00, acc01, acc10, acc11, lhs0_ptr + offset, lhs1_ptr + offset,
+            rhs0_ptr + offset, rhs1_ptr + offset, lhs_zero_point,
+            kFoldRhsZeroPoint ? 0 : rhs_zero_point);
+      }
+      offset += static_cast<int>(vl);
+    }
+    const vint32m1_t zero = __riscv_vmv_s_x_i32m1(0, vlmax);
+    const auto reduce = [&](vint32m4_t acc, int32_t row_bias,
+                            int32_t row_multiplier, int row_shift,
+                            int32_t lhs_sum) {
+      int32_t sum = row_bias;
+      sum += __riscv_vmv_x_s_i32m1_i32(
+          __riscv_vredsum_vs_i32m4_i32m1(acc, zero, vlmax));
+      if constexpr (kFoldRhsZeroPoint)
+        sum -= rhs_zero_point * lhs_sum;
+      return static_cast<int8_t>(quantize(sum, row_multiplier, row_shift));
+    };
+    dst[row + col * lhs_rows] =
+        reduce(acc00, row_bias0, row_multiplier0, row_shift0, lhs_sum0);
+    dst[row + 1 + col * lhs_rows] =
+        reduce(acc01, row_bias1, row_multiplier1, row_shift1, lhs_sum1);
+    dst[row + (col + 1) * lhs_rows] =
+        reduce(acc10, row_bias0, row_multiplier0, row_shift0, lhs_sum0);
+    dst[row + 1 + (col + 1) * lhs_rows] =
+        reduce(acc11, row_bias1, row_multiplier1, row_shift1, lhs_sum1);
+  };
+  const int full_rows = lhs_rows & ~1;
+  const int full_cols = cols & ~1;
+  for (int row = 0; row < full_rows; row += 2) {
+    int32_t lhs_sum0 = 0;
+    int32_t lhs_sum1 = 0;
+    if constexpr (kFoldRhsZeroPoint) {
+      for (int i = 0; i < depth; ++i) {
+        lhs_sum0 += lhs[row * depth + i];
+        lhs_sum1 += lhs[(row + 1) * depth + i];
+      }
+    }
+    for (int col = 0; col < full_cols; col += 2)
+      run_pair(row, col, lhs_sum0, lhs_sum1);
+  }
+  if (cols & 1)
+    for (int row = 0; row < full_rows; row += 2) {
+      run_single(row, cols - 1);
+      run_single(row + 1, cols - 1);
+    }
+  if (lhs_rows & 1)
+    for (int col = 0; col < cols; ++col) run_single(lhs_rows - 1, col);
+}
+
 template <typename LhsScalar, typename RhsScalar, typename DstScalar>
 inline void RvvGemmQuantized(
     const LhsScalar* lhs, int lhs_rows, int depth, int lhs_zero_point,
     const RhsScalar* rhs, int cols, int rhs_zero_point, DstScalar* dst,
     const int32_t* bias, int32_t multiplier, int multiplier_shift,
     const int32_t* multiplier_perchannel, const int* shift_perchannel,
-    int32_t output_zero_point, DstScalar clamp_min, DstScalar clamp_max) {
-  if constexpr (std::is_same_v<LhsScalar, int8_t> &&
-                std::is_same_v<RhsScalar, int8_t> &&
-                std::is_same_v<DstScalar, int8_t>) {
-    if (tensor_utils::RvvVlenClassBits() >= 256 && lhs_rows >= 8 &&
+    int32_t output_zero_point, DstScalar clamp_min, DstScalar clamp_max,
+    const int32_t* lhs_sums = nullptr) {
+    if constexpr (std::is_same_v<LhsScalar, int8_t> &&
+                  std::is_same_v<RhsScalar, int8_t> &&
+                  std::is_same_v<DstScalar, int8_t>) {
+    const int vlen_class = tensor_utils::RvvVlenClassBits();
+    if (vlen_class == 128 && lhs_rows >= 2 && depth >= 16 && cols >= 2) {
+      if (lhs_zero_point == 0) {
+        if (rhs_zero_point == 0 || cols < 4) {
+          RvvGemmQuantizedInt8Vlen128<true, false>(
+              lhs, lhs_rows, depth, lhs_zero_point, rhs, cols,
+              rhs_zero_point, dst, bias, multiplier, multiplier_shift,
+              multiplier_perchannel, shift_perchannel, output_zero_point,
+              clamp_min, clamp_max);
+        } else {
+          RvvGemmQuantizedInt8Vlen128<true, true>(
+              lhs, lhs_rows, depth, lhs_zero_point, rhs, cols,
+              rhs_zero_point, dst, bias, multiplier, multiplier_shift,
+              multiplier_perchannel, shift_perchannel, output_zero_point,
+              clamp_min, clamp_max);
+        }
+      } else {
+        RvvGemmQuantizedInt8Vlen128<false, false>(
+            lhs, lhs_rows, depth, lhs_zero_point, rhs, cols, rhs_zero_point,
+            dst, bias, multiplier, multiplier_shift, multiplier_perchannel,
+            shift_perchannel, output_zero_point, clamp_min, clamp_max);
+      }
+      return;
+    }
+    if (vlen_class >= 256 && lhs_rows >= 8 &&
         depth >= 16 && cols >= 2) {
-      RvvGemmQuantized2x2Int8(
-          lhs, lhs_rows, depth, lhs_zero_point, rhs, cols, rhs_zero_point,
-          dst, bias, multiplier, multiplier_shift, multiplier_perchannel,
-          shift_perchannel, output_zero_point, clamp_min, clamp_max);
+      if (lhs_zero_point == 0 && cols >= 2) {
+        if (rhs_zero_point == 0) {
+          RvvGemmQuantized2x2Int8Raw<false>(
+              lhs, lhs_rows, depth, rhs, cols, rhs_zero_point, dst, bias,
+              multiplier, multiplier_shift, multiplier_perchannel,
+              shift_perchannel, output_zero_point, clamp_min, clamp_max);
+        } else {
+          RvvGemmQuantized2x2Int8Raw<true>(
+              lhs, lhs_rows, depth, rhs, cols, rhs_zero_point, dst, bias,
+              multiplier, multiplier_shift, multiplier_perchannel,
+              shift_perchannel, output_zero_point, clamp_min, clamp_max,
+              lhs_sums);
+        }
+      } else if (lhs_zero_point == 0 && rhs_zero_point == 0) {
+        RvvGemmQuantized2x2Int8(
+            lhs, lhs_rows, depth, lhs_zero_point, rhs, cols, rhs_zero_point,
+            dst, bias, multiplier, multiplier_shift, multiplier_perchannel,
+            shift_perchannel, output_zero_point, clamp_min, clamp_max, true,
+            false);
+      } else if (rhs_zero_point == 0 && lhs_zero_point != 0) {
+        RvvGemmQuantized2x2Int8FoldLhs(
+            lhs, lhs_rows, depth, lhs_zero_point, rhs, cols, dst, bias,
+            multiplier, multiplier_shift, multiplier_perchannel,
+            shift_perchannel, output_zero_point, clamp_min, clamp_max);
+      } else {
+        RvvGemmQuantized2x2Int8(
+            lhs, lhs_rows, depth, lhs_zero_point, rhs, cols, rhs_zero_point,
+            dst, bias, multiplier, multiplier_shift, multiplier_perchannel,
+            shift_perchannel, output_zero_point, clamp_min, clamp_max, false,
+            false);
+      }
       return;
     }
   }
@@ -987,20 +1486,13 @@ inline void RvvGemmQuantized(
   // FP32 path does dispatch on VLEN (m2 for VLEN>=256) where it measured a
   // 1.04-1.29x win on k1.
   // Row-blocked GEMM: for a fixed output column, process kRowBlock rows at a
-  // time so the rhs column vector (load + zero-point subtraction + widening)
-  // is amortized across rows. This reduces per-output-element vsetvl /
-  // load / reduce overhead and measurably speeds up the CONV_2D pointwise
-  // GEMMs that dominate the benchmark models.
+  // time so the rhs vector work is amortized across output channels.
   constexpr int kRowBlock = 4;
   // Accumulator initialization restores the full VL for each block; keep it
   // for complete depth chunks and only reprogram VL for a tail chunk.
   // depth and VLEN are invariant for this GEMM; reuse the lane count for all
   // row blocks and scalar tails instead of rereading the vlenb-derived VL.
   const size_t vlmax = __riscv_vsetvl_e8m1(depth);
-  // Keep the accumulation vectorized, but use scalar output requantization:
-  // A210 A/B measured the four-lane vector path 20.3% slower (141.5 ms to
-  // 170.1 ms at seven threads) despite identical output bytes.
-  constexpr bool use_vectorized_4row_quantize = false;
   for (int col = 0; col < cols; ++col) {
     int row = 0;
     for (; row + kRowBlock <= lhs_rows; row += kRowBlock) {
@@ -1008,6 +1500,7 @@ inline void RvvGemmQuantized(
       vint32m4_t accum1 = __riscv_vmv_v_x_i32m4(0, vlmax);
       vint32m4_t accum2 = __riscv_vmv_v_x_i32m4(0, vlmax);
       vint32m4_t accum3 = __riscv_vmv_v_x_i32m4(0, vlmax);
+      RvvSetVlE16M2Asm(vlmax);
       int32_t sum0 = bias == nullptr ? 0 : bias[row + 0];
       int32_t sum1 = bias == nullptr ? 0 : bias[row + 1];
       int32_t sum2 = bias == nullptr ? 0 : bias[row + 2];
@@ -1015,81 +1508,43 @@ inline void RvvGemmQuantized(
       int depth_offset = 0;
       while (depth_offset < depth) {
         const size_t remaining = depth - depth_offset;
-        const size_t vl = remaining < vlmax
-                              ? __riscv_vsetvl_e8m1(remaining)
-                              : vlmax;
+        const size_t vl = remaining < vlmax ? remaining : vlmax;
+        if (vl != vlmax) RvvSetVlE16M2Asm(vl);
         vint16m2_t rhs16;
         if constexpr (std::is_same_v<RhsScalar, int8_t>) {
-          rhs16 = __riscv_vsext_vf2_i16m2(
-              __riscv_vle8_v_i8m1(rhs + col * depth + depth_offset, vl), vl);
-          if (rhs_zero_point != 0) {
-            rhs16 = __riscv_vsub_vx_i16m2(rhs16, rhs_zero_point, vl);
-          }
+          rhs16 = RvvLoadI8ToI16(
+              rhs + col * depth + depth_offset, rhs_zero_point, vl);
         } else {
-          rhs16 = __riscv_vreinterpret_v_u16m2_i16m2(
-              __riscv_vsub_vx_u16m2(
-                  __riscv_vzext_vf2_u16m2(
-                      __riscv_vle8_v_u8m1(rhs + col * depth + depth_offset,
-                                          vl),
-                      vl),
-                  static_cast<uint16_t>(rhs_zero_point), vl));
+          rhs16 = RvvLoadU8ToI16(
+              rhs + col * depth + depth_offset, rhs_zero_point, vl);
         }
         vint16m2_t lhs16_0;
         vint16m2_t lhs16_1;
         vint16m2_t lhs16_2;
         vint16m2_t lhs16_3;
         if constexpr (std::is_same_v<LhsScalar, int8_t>) {
-          lhs16_0 = __riscv_vsext_vf2_i16m2(
-              __riscv_vle8_v_i8m1(lhs + row * depth + depth_offset, vl), vl);
-          lhs16_1 = __riscv_vsext_vf2_i16m2(
-              __riscv_vle8_v_i8m1(lhs + (row + 1) * depth + depth_offset, vl),
-              vl);
-          lhs16_2 = __riscv_vsext_vf2_i16m2(
-              __riscv_vle8_v_i8m1(lhs + (row + 2) * depth + depth_offset, vl),
-              vl);
-          lhs16_3 = __riscv_vsext_vf2_i16m2(
-              __riscv_vle8_v_i8m1(lhs + (row + 3) * depth + depth_offset, vl),
-              vl);
-          if (lhs_zero_point != 0) {
-            lhs16_0 = __riscv_vsub_vx_i16m2(lhs16_0, lhs_zero_point, vl);
-            lhs16_1 = __riscv_vsub_vx_i16m2(lhs16_1, lhs_zero_point, vl);
-            lhs16_2 = __riscv_vsub_vx_i16m2(lhs16_2, lhs_zero_point, vl);
-            lhs16_3 = __riscv_vsub_vx_i16m2(lhs16_3, lhs_zero_point, vl);
-          }
+          lhs16_0 = RvvLoadI8ToI16(
+              lhs + row * depth + depth_offset, lhs_zero_point, vl);
+          lhs16_1 = RvvLoadI8ToI16(
+              lhs + (row + 1) * depth + depth_offset, lhs_zero_point, vl);
+          lhs16_2 = RvvLoadI8ToI16(
+              lhs + (row + 2) * depth + depth_offset, lhs_zero_point, vl);
+          lhs16_3 = RvvLoadI8ToI16(
+              lhs + (row + 3) * depth + depth_offset, lhs_zero_point, vl);
         } else {
-          lhs16_0 = __riscv_vreinterpret_v_u16m2_i16m2(
-              __riscv_vsub_vx_u16m2(
-                  __riscv_vzext_vf2_u16m2(
-                      __riscv_vle8_v_u8m1(
-                          lhs + row * depth + depth_offset, vl),
-                      vl),
-                  static_cast<uint16_t>(lhs_zero_point), vl));
-          lhs16_1 = __riscv_vreinterpret_v_u16m2_i16m2(
-              __riscv_vsub_vx_u16m2(
-                  __riscv_vzext_vf2_u16m2(
-                      __riscv_vle8_v_u8m1(
-                          lhs + (row + 1) * depth + depth_offset, vl),
-                      vl),
-                  static_cast<uint16_t>(lhs_zero_point), vl));
-          lhs16_2 = __riscv_vreinterpret_v_u16m2_i16m2(
-              __riscv_vsub_vx_u16m2(
-                  __riscv_vzext_vf2_u16m2(
-                      __riscv_vle8_v_u8m1(
-                          lhs + (row + 2) * depth + depth_offset, vl),
-                      vl),
-                  static_cast<uint16_t>(lhs_zero_point), vl));
-          lhs16_3 = __riscv_vreinterpret_v_u16m2_i16m2(
-              __riscv_vsub_vx_u16m2(
-                  __riscv_vzext_vf2_u16m2(
-                      __riscv_vle8_v_u8m1(
-                          lhs + (row + 3) * depth + depth_offset, vl),
-                      vl),
-                  static_cast<uint16_t>(lhs_zero_point), vl));
+          lhs16_0 = RvvLoadU8ToI16(
+              lhs + row * depth + depth_offset, lhs_zero_point, vl);
+          lhs16_1 = RvvLoadU8ToI16(
+              lhs + (row + 1) * depth + depth_offset, lhs_zero_point, vl);
+          lhs16_2 = RvvLoadU8ToI16(
+              lhs + (row + 2) * depth + depth_offset, lhs_zero_point, vl);
+          lhs16_3 = RvvLoadU8ToI16(
+              lhs + (row + 3) * depth + depth_offset, lhs_zero_point, vl);
         }
-        accum0 = __riscv_vwmacc_vv_i32m4_tu(accum0, lhs16_0, rhs16, vl);
-        accum1 = __riscv_vwmacc_vv_i32m4_tu(accum1, lhs16_1, rhs16, vl);
-        accum2 = __riscv_vwmacc_vv_i32m4_tu(accum2, lhs16_2, rhs16, vl);
-        accum3 = __riscv_vwmacc_vv_i32m4_tu(accum3, lhs16_3, rhs16, vl);
+        accum0 = __riscv_vwmacc_vv_i32m4(accum0, lhs16_0, rhs16, vl);
+        accum1 = __riscv_vwmacc_vv_i32m4(accum1, lhs16_1, rhs16, vl);
+        accum2 = __riscv_vwmacc_vv_i32m4(accum2, lhs16_2, rhs16, vl);
+        accum3 = __riscv_vwmacc_vv_i32m4(accum3, lhs16_3, rhs16, vl);
         depth_offset += static_cast<int>(vl);
       }
       // vredsum consumes only seed lane 0; vmv.s.x avoids an m1 fill and
@@ -1108,40 +1563,6 @@ inline void RvvGemmQuantized(
       sum2 += __riscv_vmv_x_s_i32m1_i32(reduced2);
       sum3 += __riscv_vmv_x_s_i32m1_i32(reduced3);
 
-      if constexpr (std::is_same_v<LhsScalar, uint8_t> &&
-                    std::is_same_v<RhsScalar, uint8_t>) {
-        if (use_vectorized_4row_quantize) {
-          const int32_t sums[4] = {sum0, sum1, sum2, sum3};
-          vint32m4_t value = __riscv_vle32_v_i32m4(sums, 4);
-          if (multiplier_perchannel == nullptr) {
-            value = RvvVectorizedQuantize(value, multiplier, multiplier_shift,
-                                          4);
-          } else {
-            value = RvvVectorizedQuantizePerChannel(
-                value, multiplier_perchannel + row,
-                reinterpret_cast<const int32_t*>(shift_perchannel + row), 4,
-                true);
-          }
-          value = __riscv_vadd_vx_i32m4(value, output_zero_point, 4);
-          value = __riscv_vmax_vx_i32m4(value, clamp_min, 4);
-          value = __riscv_vmin_vx_i32m4(value, clamp_max, 4);
-          DstScalar* output = dst + row + col * lhs_rows;
-          if constexpr (std::is_same_v<DstScalar, uint8_t>) {
-            const vuint16m2_t value16 = __riscv_vncvt_x_x_w_u16m2(
-                __riscv_vreinterpret_v_i32m4_u32m4(value), 4);
-            __riscv_vse8_v_u8m1(
-                reinterpret_cast<uint8_t*>(output),
-                __riscv_vncvt_x_x_w_u8m1(value16, 4), 4);
-          } else {
-            const vint16m2_t value16 =
-                __riscv_vncvt_x_x_w_i16m2(value, 4);
-            __riscv_vse8_v_i8m1(
-                reinterpret_cast<int8_t*>(output),
-                __riscv_vncvt_x_x_w_i8m1(value16, 4), 4);
-          }
-          continue;
-        }
-      }
       dst[row + 0 + col * lhs_rows] =
           static_cast<DstScalar>(quantize(sum0, row + 0));
       dst[row + 1 + col * lhs_rows] =
@@ -1154,45 +1575,29 @@ inline void RvvGemmQuantized(
     for (; row < lhs_rows; ++row) {
       int32_t sum = bias == nullptr ? 0 : bias[row];
       vint32m4_t accum = __riscv_vmv_v_x_i32m4(0, vlmax);
+      RvvSetVlE16M2Asm(vlmax);
       int depth_offset = 0;
       while (depth_offset < depth) {
         const size_t remaining = depth - depth_offset;
-        const size_t vl = remaining < vlmax
-                              ? __riscv_vsetvl_e8m1(remaining)
-                              : vlmax;
+        const size_t vl = remaining < vlmax ? remaining : vlmax;
+        if (vl != vlmax) RvvSetVlE16M2Asm(vl);
         vint16m2_t lhs16;
         vint16m2_t rhs16;
         if constexpr (std::is_same_v<LhsScalar, int8_t>) {
-          lhs16 = __riscv_vsext_vf2_i16m2(
-              __riscv_vle8_v_i8m1(lhs + row * depth + depth_offset, vl), vl);
-          if (lhs_zero_point != 0) {
-            lhs16 = __riscv_vsub_vx_i16m2(lhs16, lhs_zero_point, vl);
-          }
+          lhs16 = RvvLoadI8ToI16(lhs + row * depth + depth_offset,
+                                 lhs_zero_point, vl);
         } else {
-          lhs16 = __riscv_vreinterpret_v_u16m2_i16m2(
-              __riscv_vsub_vx_u16m2(
-                  __riscv_vzext_vf2_u16m2(
-                      __riscv_vle8_v_u8m1(lhs + row * depth + depth_offset,
-                                          vl),
-                      vl),
-                  static_cast<uint16_t>(lhs_zero_point), vl));
+          lhs16 = RvvLoadU8ToI16(lhs + row * depth + depth_offset,
+                                 lhs_zero_point, vl);
         }
         if constexpr (std::is_same_v<RhsScalar, int8_t>) {
-          rhs16 = __riscv_vsext_vf2_i16m2(
-              __riscv_vle8_v_i8m1(rhs + col * depth + depth_offset, vl), vl);
-          if (rhs_zero_point != 0) {
-            rhs16 = __riscv_vsub_vx_i16m2(rhs16, rhs_zero_point, vl);
-          }
+          rhs16 = RvvLoadI8ToI16(rhs + col * depth + depth_offset,
+                                 rhs_zero_point, vl);
         } else {
-          rhs16 = __riscv_vreinterpret_v_u16m2_i16m2(
-              __riscv_vsub_vx_u16m2(
-                  __riscv_vzext_vf2_u16m2(
-                      __riscv_vle8_v_u8m1(rhs + col * depth + depth_offset,
-                                          vl),
-                      vl),
-                  static_cast<uint16_t>(rhs_zero_point), vl));
+          rhs16 = RvvLoadU8ToI16(rhs + col * depth + depth_offset,
+                                 rhs_zero_point, vl);
         }
-        accum = __riscv_vwmacc_vv_i32m4_tu(accum, lhs16, rhs16, vl);
+        accum = __riscv_vwmacc_vv_i32m4(accum, lhs16, rhs16, vl);
         depth_offset += static_cast<int>(vl);
       }
       const vint32m1_t zero32 = __riscv_vmv_s_x_i32m1(0, vlmax);
@@ -2844,15 +3249,20 @@ inline void DepthwiseConvInt8PerChannel(
   const int batch_end = thread_dim == 0 ? thread_end : batches;
   const int row_start = thread_dim == 1 ? thread_start : 0;
   const int row_end = thread_dim == 1 ? thread_end : output_height;
-  const bool use_vlen_m2 = tensor_utils::RvvVlenClassBits() >= 256;
+  const int vlen_class = tensor_utils::RvvVlenClassBits();
+  const bool use_vlen_m2 = vlen_class >= 256;
 #if !defined(TFLITE_SINGLE_ROUNDING) || !TFLITE_SINGLE_ROUNDING
-  const bool use_vectorized_quantize = use_vlen_m2;
+  const bool use_vectorized_quantize =
+      use_vlen_m2 || vlen_class == 128;
 #else
   constexpr bool use_vectorized_quantize = true;
 #endif
   // The two-pixel accumulator raises register pressure on the A/B target;
   // the single-pixel channel path is faster on VLEN=256 and 512.
-  constexpr bool use_pair = false;
+  // On C920V2 the extra accumulator and per-pixel requantization outweigh
+  // weight reuse for this per-channel path; keep the faster single-pixel
+  // channel kernel for VLEN=128.
+  const bool use_pair = false;
   // e8m1 and e32m4 have the same VLMAX, so each output-channel block can
   // reuse its e32m4 VL for byte loads instead of issuing a second vsetvl.
   if (depth_multiplier == 1) {

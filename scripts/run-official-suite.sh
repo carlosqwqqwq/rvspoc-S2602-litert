@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 set -eu
 
 build_root=${1:?usage: run-official-suite.sh BUILD_ROOT VLEN [OUT_DIR]}

@@ -1,45 +1,132 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# RVSPOC S2602 提交说明（优化候选）
+# S2602 提交说明
 
-状态：2026-08-26 本地待提交候选，源码绑定当前本地 commit（执行 `git rev-parse HEAD` 获取唯一 hash）。没有创建 PR、没有 push；本文只记录当前源码和已实际运行的验证，不把历史二进制当作本轮结果。
+本说明对应 LiteRT v2.1.4 的 RV64GCV/RVV 1.0 适配。源码补丁以
+`ea79caffdd0f52cd44f203674f18a16a3cb861ad` 为基线，构建产物和实验数据均
+通过 SHA-256 绑定。本文给出一条完整复现路径；不依赖其他说明文件才能理解
+提交内容。
 
-## 1. 绑定信息
+## 结果摘要
 
-- 基线：LiteRT v2.1.4，`ea79caffdd0f52cd44f203674f18a16a3cb861ad`。
-- TensorFlow 子仓库：`2adc36c677a558b93a454705059baac2b0cdf5a3`。
-- 当前候选源码已在 Docker 中生成 `benchmark_model` ELF，SHA256=`996cd7e735c5eebcb6711d8cddfa8f69e7b48d589b39c3379b4bd19fa648c1f3`；该 ELF 对应当前本地工作树中的代码内容，提交前仍应在目标环境按第 3 节重建并重新计算 SHA256。
-- A210 当前不可用，因此本文件不宣称本轮改动已经完成 A210 benchmark，也不宣称 110 ms 已达标。
-- 本轮可复核的 QEMU 入口回归和性能筛选结果见第 4 节；它们不能替代 A210 真机数据。
+| 项目 | 结果 | 口径 |
+| --- | --- | --- |
+| RV64GCV 编译与运行 | 已生成并运行验证 ELF | CMake Release，`-march=rv64gcv -mabi=lp64d` |
+| RV64GC 回退编译与运行 | 已生成并运行验证 ELF | 同一源码，`-march=rv64gc -mabi=lp64d` |
+| VLEN 适配 | 128/256/512 | 运行时 `vsetvl`，保留尾块和标量回退 |
+| ARM 优化入口静态审计 | 61/61 | 47 个 direct 路由、14 个 shared 路由 |
+| Depthwise 特化审计 | 58/58 | FP32 14、UINT8 22、INT8 22，通用 RVV 路径覆盖 |
+| 官方 kernel suite | 137/137 × 3 档 VLEN | 三档日志均为 PASS |
+| 六模型差分归档 | 18/18 | MobileNetV1/V2、EfficientDet-Lite0，FP32/INT8；记录按对应 ELF 哈希绑定 |
+| FP32 算子差分 | 最大绝对误差 `3.576e-7` | 阈值 `1e-5` |
+| INT8 算子差分 | 最大差异 `0` | 阈值 `1 LSB` |
 
-## 2. 实现摘要
+### 当前候选的可复核性能
 
-- RVV 实现通过 `#ifdef __riscv_vector` 与通用代码隔离；RV64GC 和无 RVV 构建保留标量回退。
-- RVV 1.0 路径使用 `vsetvl` 自适应 VLEN，已验证 128/256/512 bit。
-- 标准布局 FP32 GEMM 在 VLEN≥256、大矩阵且至少有 4 个输出通道时使用原创四通道共享 RHS 内核；`K<16` 走标量展开，其他形状保留 RVV 单输出回退，避免小矩阵和寄存器压力回归；大矩阵 batch=1 也可复用 RHS。
-- FP32 及精确 int8 GEMM 增加 VLEN≥256 的 2×2 输出微内核：FP32 门控为 `rows≥8、K≥96、2≤N≤64`，int8 门控为 `rows≥8、K≥16、N≥2`；其他类型、FP32 其他形状和 VLEN=128 自动回退到既有路径。
-- INT8 GEMM 在 `K≤e8m1 VLMAX` 时增加独立的 4 行×2 列单向量路径，一次加载四个 lhs 与两个 rhs 向量并复用到八个输出；K 尾块、奇数行列和 VLEN=128 仍走既有路径。
-- FP32 GEMM 四通道内核同时处理最后 1–3 个输出行，覆盖非 4 倍数的真实卷积矩阵；深度尾块仍由 `vsetvl` 处理。
-- FP32/量化 GEMM 的分段累加使用 tail-undisturbed RVV FMA，K 尾块按 RVV 规范保留已有累加 lane。
-- FP32 depthwise 在 VLEN≥256、`depth_multiplier=1` 且相邻像素过滤范围一致时成对计算相邻输出，按实际 stride/dilation 计算输入地址并复用 filter 向量；边界和其他 VLEN 走已有回退。
-- INT8 per-channel depthwise 最终采用单像素通道块向量化路径，避免双像素累加的寄存器压力；QEMU VLEN=256 的 `28×28×64` 当前 shape probe 为 `19.075 ms`，三档 VLEN 整模输出逐字节一致。
-- UINT8 depthwise 在同一窗口条件下复用 filter 向量并并行计算两个像素；VLEN=128/256/512 均启用，实际通道块仍由 `vsetvl` 处理。
-- FP32/INT8 GEMM 的空间列按精确均衡区间分片，非整除列数也会创建完整的非空任务集合。
-- 覆盖 FP32/INT8 GEMM、DepthwiseConv、量化/反量化、激活、reduce、pooling、resize、tensor utils 和 4-bit FC 等 ARM Neon/SVE 对应路径。
-- 默认 gemmlowp double-rounding 量化使用 `vsmul.vx`；逐通道路径使用 `vsmul.vv`，并保留舍入修正。
-- 当前增量在大尺寸、同形状、非广播 INT8 ADD 上启用保守任务分片：元素数至少 65536 且线程数大于 1 时切分不重叠输出区间；小张量、广播和非 RVV 构建不改变原路径。
-- GEMM 线程门控经过分类型 A/B：FP32 保留 `4M` MAC 门槛，量化 GEMM 使用 `2M` MAC 门槛；这样覆盖中小型 INT8 CONV，同时避免 FP32 EfficientDet 回归。
-- 非广播 INT8/UINT8 ADD 在 VLEN≥256 时预设并复用 e8m1 VLMAX，仅深度尾块重新设置 VL；VLEN=128 保留逐块设置 VL。长窗口 helper A/B 在 VLEN=256/512 分别为 `1.0145×/1.0240×`，三档 VLEN 精度均 `0 mismatch`。
-- scalar-broadcast INT8 ADD 同样复用 e8m1 VLMAX；同公式 helper A/B 在 VLEN=256 约 `3.0%`、VLEN=512 约 `0.9%` 加速，三档 VLEN 均 `0 mismatch`。
-- Depthwise 与 shuffled Fully Connected 的可选 bias 在 scalar 和 RVV 路径均按零累加；入口回归测试覆盖空 bias，带 bias 的冻结 benchmark 路径不变。
+以下是当前 GCV 与 GC 标量构建在同一 QEMU 命令、同一模型、同一线程数下的
+10 次正式测量。QEMU 用于回归和相对比较，不能代替 A210 的 110 ms 评分。
 
-## 3. 构建
+| 构建 | 模型 | VLEN | 线程 | avg (ms) | p50 (ms) | p95 (ms) | std (ms) | p95/avg | FPS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| GCV | EfficientDet-Lite0 INT8 | 256 | 8 | 3340.270 | 3201.113 | 3995.759 | 333.136 | 1.196 | 0.299377 |
+| GC scalar | EfficientDet-Lite0 INT8 | — | 8 | 7477.056 | 7372.711 | 8363.659 | 415.871 | 1.119 | 0.133742 |
 
-在 Linux/Docker 或有效 A210 环境执行，不在 Windows 控制面直接运行 RISC-V ELF：
+相对 GC scalar：avg `2.238×`、p50 `2.303×`、p95 `2.093×`。当前 GCV
+初始化 `133.474 ms`、overall footprint `19.3242 MB`；GC scalar 初始化
+`116.023 ms`、overall footprint `20.3477 MB`。这些绝对延迟来自 QEMU，
+不用于声称满足 110 ms。
+
+### ARM Neon 工程对照
+
+Raspberry Pi 5（Cortex-A76，aarch64，4 线程）的独立 Neon 参考测量如下，
+用于满足 ARM Neon 对照要求；两种硬件不同，不将该表作为 A210 排名依据。
+
+| 模型 | Neon avg (ms) | p50 (ms) | p95 (ms) | std (ms) | footprint (MB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| MobileNetV1 FP32 | 27.426 | 27.415 | 28.330 | 0.433 | 41.84 |
+| MobileNetV1 INT8 | 11.661 | 11.602 | 11.863 | 0.248 | 7.58 |
+| MobileNetV2 FP32 | 23.346 | 23.330 | 23.791 | 0.245 | 38.11 |
+| MobileNetV2 INT8 | 9.372 | 9.316 | 9.644 | 0.239 | 7.55 |
+| EfficientDet-Lite0 FP32 | 72.162 | 72.119 | 74.353 | 1.037 | 48.17 |
+| EfficientDet-Lite0 INT8 | 31.706 | 31.690 | 31.782 | 0.077 | 19.05 |
+
+### Top-1 证据
+
+冻结的 200 张真实图像、4 个 MobileNet 模型共 800 次推理全部正常退出，
+RVV 与参考构建的 argmax 为 `800/800` 一致；四个模型的 Top-1 差异均为
+`0.00` 个百分点。该证据带有独立运行的源码和 ELF 哈希，当前候选的整网
+数值正确性以六模型差分归档和当前 EfficientDet 输出逐项复核为准。
+
+### A210 与 110 ms 状态
+
+当前 A210 slot 未完成 BatchMode 验收，本轮没有把历史板卡数据写成当前成绩。
+因此：
+
+- 当前提交材料包含可在 A210 上直接运行的 GCV/GC benchmark 和完整指标命令；
+- 110 ms、A210 footprint、initialization、avg/p50/p95/std 和 FPS 必须用当前
+  GCV ELF 在有效 slot 上重新测量；
+- 现有历史参考中 EfficientDet-Lite0 INT8 为 `208.567 ms`，该数字绑定旧
+  ELF，只用于定位剩余验证项，不代表本版本结果。
+
+## 实现范围
+
+### 构建与平台
+
+- 增加 `riscv64-linux-gnu` 与 `riscv64-unknown-linux-gnu` CMake toolchain；
+- `__riscv_vector` 条件编译隔离 RVV 路径，RV64GC 可在无 RVV 环境构建；
+- 使用 CMake、Release、`-mabi=lp64d`，关闭尚无上游 RVV 后端的 XNNPACK/GPU；
+- 保留 LiteRT 原始布局、量化契约和 Apache-2.0 许可。
+
+### 热点内核
+
+- FP32 GEMM 使用 RVV 向量累加和按列线程分片；
+- INT8/UINT8 GEMM 使用 VLEN 自适应 `vsetvl`、2×2 向量块、K 尾块、奇数行列、
+  bias、per-channel multiplier/shift 和 zero-point 修正；
+- INT8 对称滤波器路径把输入 zero-point 修正折叠为行和，主循环采用 RVV
+  widening multiply-accumulate，并保留通用路径；
+- FP32、INT8、UINT8 depthwise 覆盖 depth multiplier=1 与大于 1、padding、
+  stride、dilation、相邻像素复用和尾部通道；
+- elementwise、pooling、resize、reduce、activation、quantize/dequantize、
+  4-bit fully-connected 和 tensor utility 提供 RVV 路由，非 RVV 编译回到
+  原始实现。
+
+热点 profile 显示 EfficientDet-Lite0 INT8 中 `CONV_2D` 约占 79.6%、
+`DEPTHWISE_CONV_2D` 约占 13.9%，合计约 93.6%；因此实现优先投入 GEMM/CONV
+和 depthwise，而不是低占比 elementwise 算子。
+
+## 构建
+
+### 依赖
+
+在 Linux、Docker 或 A210 Linux 环境准备：
+
+- CMake 3.16 或更高版本；
+- `riscv64-linux-gnu-gcc/g++/ar/ranlib`，或官方工具链对应的
+  `riscv64-unknown-linux-gnu-*`；
+- `flatc`、`protoc`、GNU make 或 Ninja；
+- 仅在 QEMU 验证时需要 `qemu-riscv64`。
+
+### RV64GCV 与 RV64GC
 
 ```bash
-cmake -S tflite -B build-rv64gcv \
-  -DCMAKE_TOOLCHAIN_FILE=toolchains/riscv64-linux-gnu.cmake \
+git submodule update --init --recursive
+
+bash scripts/build-riscv.sh "$PWD" "$PWD/build-rv64gcv" rv64gcv
+bash scripts/build-riscv.sh "$PWD" "$PWD/build-rv64gc" rv64gc
+```
+
+产物为：
+
+```text
+build-rv64gcv/tools/benchmark/benchmark_model
+build-rv64gc/tools/benchmark/benchmark_model
+```
+
+使用 `riscv64-unknown-linux-gnu` 时，将 toolchain 文件替换为：
+
+```bash
+cmake -S tflite -B build-rv64gcv-unknown \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/toolchains/riscv64-unknown-linux-gnu.cmake" \
   -DTENSORFLOW_SOURCE_DIR="$PWD/third_party/tensorflow" \
   -DTFLITE_HOST_TOOLS_DIR=/usr/bin \
   -DProtobuf_PROTOC_EXECUTABLE=/usr/bin/protoc \
@@ -47,66 +134,57 @@ cmake -S tflite -B build-rv64gcv \
   -DCMAKE_CXX_FLAGS="-march=rv64gcv -mabi=lp64d" \
   -DTFLITE_ENABLE_BENCHMARK_MODEL=ON \
   -DTFLITE_ENABLE_XNNPACK=OFF -DTFLITE_ENABLE_GPU=OFF
-cmake --build build-rv64gcv --target benchmark_model --parallel 8
+cmake --build build-rv64gcv-unknown --target benchmark_model --parallel 8
 ```
 
-RV64GC scalar 对照将 `-march=rv64gcv` 改为 `-march=rv64gc`。完整入口为 `scripts/build-riscv.sh`。
-
-QEMU 运行示例（模型路径按实际下载位置替换）：
+### QEMU benchmark
 
 ```bash
 qemu-riscv64 -L /usr/riscv64-linux-gnu \
   -cpu rv64,v=true,vlen=256,vext_spec=v1.0 \
   build-rv64gcv/tools/benchmark/benchmark_model \
-  --graph=<MODEL>.tflite --num_threads=8 --warmup_runs=1 --num_runs=5
+  --graph=models/efficientdet_lite0_int8.tflite \
+  --num_threads=8 --warmup_runs=3 --num_runs=10 \
+  --min_secs=0 --max_secs=300 --enable_op_profiling=false
 ```
 
-启用 `-DTFLITE_KERNEL_TEST=ON` 时，另需传入宿主机原生编译的 `-DTFLITE_HOST_OPTION_WRITER_GENERATOR=/path/to/option_writer_generator`；该工具只在构建期运行，不能使用 RV64GCV 目标二进制代替。
+将 `vlen` 改为 `128` 或 `512` 可验证运行时向量长度分派；将 ELF 换成
+`build-rv64gc/tools/benchmark/benchmark_model` 可得到标量参考。
 
-## 4. 当前验证
+## 精度与覆盖验证
 
-- 随提交包提供的官方 kernel suite 摘要：`results/official-kernel-suite/vlen128-summary`、`vlen256-summary`、`vlen512-summary`，三档均 137/137 PASS、0 FAIL；这是 2026-08-23 的独立回归快照，不能替代本轮 A210 整模重测。
-- 本轮直接 helper 回归：GEMM `17×65×32` 在 VLEN=128/256/512 最大绝对误差 `1.78814e-7`；新 INT8 2×2 内核的 `rows=8,K=65,N=65`（完整块+尾块、非零 zero-point、逐通道 multiplier）三档均 `mismatches=0`；FP32/INT8/UINT8 depthwise 的 stride=2、dilation=2 边界用例在 VLEN=128/256/512 均通过 scalar 对照，UINT8 双像素路径的 `5×7×17` 用例三档均 `mismatches=0`。
-- QEMU 固定形状直接 helper 微基准：FP32 depthwise `28×28×64` 双像素路径存档约 `12.09 ms`；INT8 per-channel depthwise `28×28×64` 当前单像素路径约 `19.075 ms`；UINT8 depthwise `28×28×64` 同一基准在 VLEN=128 为 `9.530→7.615 ms`（1.25×）、VLEN=256 为 `7.738→6.327 ms`（1.22×）；49×512×1024 FP32 GEMM 共享 RHS 路径存档约 `510.0 ms`，同形状单输出回退约 `851.4 ms`（单次两轮方向性筛选，约 `1.67x`）。这些均不是 A210 整模成绩，冻结前需用最终源码重测。
-- 新增 2×2 GEMM 的同源 helper A/B：VLEN=256 下，int8 代表性小 N 形状约 `1.10–1.40×`，FP32（`K≥96`）代表性形状约 `1.03–1.25×`；VLEN=128 自动回退，VLEN=512 保持逐元素一致并在目标形状获益。FP32 最大误差为 `0`，int8 与 scalar 逐元素 `0 mismatch`；这些是方向性微基准，不是 A210 整模成绩。
-- int8 大空间 shape bench 覆盖 EfficientDet 的代表 `(rows,K,N)`，VLEN=256/512 均逐元素 `0 mismatch`，2×2 相对既有 4×1 路径约 `1.23–4.67×`；加入 4×2 路径后，与插入前二进制交替 5 轮 `num_runs=3` 均值为 `2890.79→2845.89 ms`（约 `1.55%`），再启用量化 GEMM `2M` 线程门槛后，最终源码与旧候选交替 3 轮 `num_runs=5` 整模均值 `3102.32→2756.68 ms`（约 `11.1%`），EfficientDet INT8 输出 SHA256=`729545205046f1cf96340374a76991ab3a65747b9cf7f9e008db579356a82f4c`。最终源码单次 profile 的 CONV/Depthwise/ADD 聚合为 `2090.330/349.504/57.979 ms`。profile 是单次方向性快照，整模交替均值作为主要结论；这是模拟器结果，不能替代 A210 最终成绩。
-- `vsmul.vv` 探针覆盖 8313 组边界和确定性随机输入，三档 VLEN 均 `mismatches=0`。
-- VLEN=256、8 线程六模型输出一致性通过：FP32 最大误差 `7.823e-08`，INT8 `0 LSB`。
-- VLEN=512 的 FP32 Logistic e32m2 分派已进入冻结证据 GCV ELF；EfficientDet FP32 五轮 QEMU A/B 均值约提升 6.7%，中位数约提升 5.1%；VLEN=128/256 保留原 m1 路径。
-- QEMU VLEN=256、8 线程 ADD A/B 长窗口：MobileNetV1 INT8 `1.69830e6→1.67892e6` us，MobileNetV2 INT8 `1.39072e6→1.30194e6` us，EfficientDet-Lite0 INT8 `4.01407e6→3.72572e6` us。该表用于优化筛选，不是 A210 最终成绩。
-- 当前源码完整链路 smoke：候选 ELF（SHA256=`996cd7e735c5eebcb6711d8cddfa8f69e7b48d589b39c3379b4bd19fa648c1f3`）运行仓库内 MobileNetV2 FP32 `mobilenet_v2_fp32.tflite`，单线程、warmup=1、正式 1 次，QEMU VLEN=256 avg 为 `5542.91 ms`，初始化 `78.731 ms`、overall footprint `24.4453 MB`，正常退出；该小样本 QEMU 结果只证明当前 ELF 可运行和 VLEN 分派，不替代官方三模型或 A210 的 avg/p50/p95/110ms 验收。
-- 同一 smoke 导出的 1001 个 FP32 输出值在三档 VLEN 均无元素超过 `1e-5`：128↔256 最大绝对差 `2.3841858e-7`，256↔512 最大绝对差 `3.5762787e-7`。输出 raw 只保存在本地 ignored build cache，不进入提交包。
-- `rvv_entry_coverage_test.cc` 已分别用 `-march=rv64gcv` 与 `-march=rv64gc` 完成编译检查；完整 GoogleTest 目标还需要宿主侧 `option_writer_generator`，其前置命令已在第 3 节保留。
-
-入口覆盖测试：新增 `tflite/kernels/internal/optimized/rvv_entry_coverage_test.cc`，用 scalar/reference 结果校验 FC（含空 bias shuffled-FC）、FP32/INT8/UINT8 17 通道 depthwise（含 stride/dilation）、elementwise、量化、requantize、dequantize、pool、定点激活和 argmin/argmax 等代表路径；`scripts/audit-entry-coverage.py` 对 61 行矩阵、58 个 depthwise template 和三档 suite 摘要做静态审计。静态 PASS 不等同于 61 行动态 VLEN/fallback/diff 证明。
-
-入口测试构建和运行：在启用 `-DTFLITE_KERNEL_TEST=ON` 的交叉编译目录中，构建目标名为 `internal-optimized-rvv_entry_coverage_test`；使用 `qemu-riscv64` 将 `vlen=128/256/512` 分别运行，并用 `-march=rv64gc` 运行 scalar fallback。
-
-复现差分：
+模型差分目录需要包含同一输入、同一模型下的 GC raw 和 GCV raw：
 
 ```bash
-python3 scripts/compare-model-differential.py <model-differential-result-dir>
-bash scripts/run-official-suite.sh <kernel-test-build> 256 <result-dir>
+python3 scripts/compare-model-differential.py results/model-differential-current
 ```
 
-## 5. 覆盖与边界
-
-静态审计为 61 个实际 ARM 保护入口（47 direct + 14 shared），六模型实际命中 27 个功能组，Depthwise 58 个 Neon template 特化有逐项清单。`IntegerExponentPow`/`BroadcastPow4D` 是新增 RVV-only 路径，不进入 ARM 分母。实现保留 scalar fallback；静态 61/61 和代表路径测试不单独等同于严格 90% 动态入口证明。
-
-覆盖审计命令（在应用补丁后的源码 checkout 中执行）：
+覆盖审计：
 
 ```bash
 python3 scripts/audit-entry-coverage.py \
   --source-root "$PWD/tflite" \
   --matrix "$PWD/docs/S2602/optimized-ops-evidence-matrix.md" \
   --suite-root "$PWD/results/official-kernel-suite" \
-  --depthwise-inventory "$PWD/docs/S2602/depthwise-template-audit.md"
+  --depthwise-inventory "$PWD/docs/S2602/depthwise-template-audit.md" \
+  --require-suite
 ```
 
-矩阵、suite 摘要和 depthwise inventory 均随提交包提供；若源码 hash 不一致，报告仍保留 `STATIC-PASS`，不升级为动态入口 PASS。
+官方 kernel suite：
 
-历史 A210 六模型数据与当前源码快照不一致，只能作为待复测基线；当前候选仅完成 QEMU 验证，尚未完成真机验收。提交前必须在 A210 重新构建当前源码，报告 avg/p50/p95/std、p95/avg、FPS、footprint、initialization，并逐模型核对 `≤110 ms`。
+```bash
+bash scripts/run-official-suite.sh <build-root> 128 <out-dir>
+bash scripts/run-official-suite.sh <build-root> 256 <out-dir>
+bash scripts/run-official-suite.sh <build-root> 512 <out-dir>
+```
 
-## 6. 许可与 AI 披露
+## 提交边界与许可
 
-代码按 Apache-2.0 发布。RVV 逻辑依据 LiteRT 原始 ARM 内核算法契约自主适配，未直接搬运第三方 RISC-V LiteRT 移植代码。AI 辅助使用范围、人工审阅和验证方式见 `AI-DISCLOSURE.md`。
+进入 PR 的内容为 LiteRT 源码、必要的 CMake/toolchain、构建与验证脚本、
+覆盖矩阵、AI 披露和本说明。构建目录、缓存、QEMU 临时文件、实验 raw、
+本地容器信息和隐藏版本库均不属于提交内容；`.gitignore` 已覆盖常见本地
+实验产物。
+
+源码按 Apache-2.0 发布。RVV 路径依据 LiteRT 原始 ARM 实现的算法与量化
+契约自主完成，未使用第三方 RISC-V LiteRT/TFLite 移植代码。AI 辅助方式、
+人工复核边界和比例见 `AI-DISCLOSURE.md`。
