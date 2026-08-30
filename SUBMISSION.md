@@ -2,10 +2,9 @@
 
 # S2602 提交说明
 
-本说明对应 LiteRT v2.1.4 的 RV64GCV/RVV 1.0 适配。源码补丁以
-`ea79caffdd0f52cd44f203674f18a16a3cb861ad` 为基线，构建产物和实验数据均
-通过 SHA-256 绑定。本文给出一条完整复现路径；不依赖其他说明文件才能理解
-提交内容。
+本说明对应 LiteRT v2.1.4 的 RV64GCV/RVV 1.0 适配。模型、输入、构建产物和
+实验数据均随本 PR 归档。本文给出一条完整复现路径；不依赖其他说明文件才能
+理解提交内容。
 
 ## 结果摘要
 
@@ -17,7 +16,7 @@
 | ARM 优化入口静态审计 | 61/61 | 47 个 direct 路由、14 个 shared 路由 |
 | Depthwise 特化审计 | 58/58 | FP32 14、UINT8 22、INT8 22，通用 RVV 路径覆盖 |
 | 官方 kernel suite | 137/137 × 3 档 VLEN | 三档日志均为 PASS |
-| 六模型差分归档 | 18/18 | MobileNetV1/V2、EfficientDet-Lite0，FP32/INT8；记录按对应 ELF 哈希绑定 |
+| 六模型差分归档 | 18/18 | MobileNetV1/V2、EfficientDet-Lite0，FP32/INT8；记录含对应构建、参数和 raw 输出 |
 | FP32 算子差分 | 最大绝对误差 `3.576e-7` | 阈值 `1e-5` |
 | INT8 算子差分 | 最大差异 `0` | 阈值 `1 LSB` |
 
@@ -54,8 +53,8 @@ Raspberry Pi 5（Cortex-A76，aarch64，4 线程）的独立 Neon 参考测量�
 
 冻结的 200 张真实图像、4 个 MobileNet 模型共 800 次推理全部正常退出，
 RVV 与参考构建的 argmax 为 `800/800` 一致；四个模型的 Top-1 差异均为
-`0.00` 个百分点。该证据带有独立运行的源码和 ELF 哈希，当前候选的整网
-数值正确性以六模型差分归档和当前 EfficientDet 输出逐项复核为准。
+`0.00` 个百分点。提交内保留参考与 RVV 输出归档、固定标签和逐模型退出记录，
+当前候选的整网数值正确性以六模型差分归档和当前 EfficientDet 输出逐项复核为准。
 
 ### A210 与 110 ms 状态
 
@@ -65,8 +64,8 @@ RVV 与参考构建的 argmax 为 `800/800` 一致；四个模型的 Top-1 差�
 - 当前提交材料包含可在 A210 上直接运行的 GCV/GC benchmark 和完整指标命令；
 - 110 ms、A210 footprint、initialization、avg/p50/p95/std 和 FPS 必须用当前
   GCV ELF 在有效 slot 上重新测量；
-- 现有历史参考中 EfficientDet-Lite0 INT8 为 `208.567 ms`，该数字绑定旧
-  ELF，只用于定位剩余验证项，不代表本版本结果。
+- 现有历史参考中 EfficientDet-Lite0 INT8 为 `208.567 ms`，该数字来自历史
+  参考构建，只用于定位剩余验证项，不代表本版本结果。
 
 ## 实现范围
 
@@ -153,10 +152,10 @@ qemu-riscv64 -L /usr/riscv64-linux-gnu \
 
 ## 精度与覆盖验证
 
-模型差分目录需要包含同一输入、同一模型下的 GC raw 和 GCV raw：
+模型差分目录包含同一输入、同一模型下的 GC raw 和 GCV raw：
 
 ```bash
-python3 scripts/compare-model-differential.py results/model-differential-current
+python3 scripts/compare-model-differential.py results/model-differential
 ```
 
 覆盖审计：
@@ -181,9 +180,10 @@ bash scripts/run-official-suite.sh <build-root> 512 <out-dir>
 ## 提交边界与许可
 
 进入 PR 的内容为 LiteRT 源码、必要的 CMake/toolchain、构建与验证脚本、
-覆盖矩阵、AI 披露和本说明。构建目录、缓存、QEMU 临时文件、实验 raw、
-本地容器信息和隐藏版本库均不属于提交内容；`.gitignore` 已覆盖常见本地
-实验产物。
+覆盖矩阵、AI 披露、六个题目模型、固定输入、RV64GC/RV64GCV benchmark ELF，
+以及 `results/` 下的模型差分、Top-1、算子 profile、QEMU A/B、ARM Neon、
+depthwise 和官方 kernel suite 复核材料。构建目录、缓存、本地容器信息和隐藏
+版本库不属于提交内容；`.gitignore` 继续覆盖常见临时产物。
 
 源码按 Apache-2.0 发布。RVV 路径依据 LiteRT 原始 ARM 实现的算法与量化
 契约自主完成，未使用第三方 RISC-V LiteRT/TFLite 移植代码。AI 辅助方式、

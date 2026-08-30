@@ -1,0 +1,62 @@
+id	entry	route	static	test_target	test_source	test_registered	suite_vlen128	suite_vlen256	suite_vlen512	status
+1	ShuffledFullyConnectedWorkerImpl (431)	rvv_optimized_ops::ShuffledFullyConnectedWorker	PASS	fully_connected_test	fully_connected_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+2	ShuffledFullyConnected (602)	rvv_optimized_ops::ShuffledFullyConnectedWorker	PASS	fully_connected_test	fully_connected_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+3	RoundToNearest (888)	rvv_optimized_ops::RvvVectorizedQuantize	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+4	RoundToNearestUnsigned (904)	rvv_optimized_ops::RvvVectorizedQuantize	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+5	AddElementwise（FP32）(1476)	rvv_optimized_ops::AddFloat	PASS	add_test	add_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+6	AddElementwise（UINT8）(1539)	rvv_optimized_ops::QuantizedBinaryUint8<false>	PASS	add_test	add_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+7	AddScalarBroadcast（UINT8）(1631)	rvv_optimized_ops::AddScalarUint8	PASS	add_test	add_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+8	AddScalarBroadcast（FP32）(1734)	rvv_optimized_ops::AddScalarFloat	PASS	add_test	add_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+9	MulElementwise（FP32）(1896)	rvv_optimized_ops::MulFloat	PASS	mul_test	mul_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+10	MulElementwise（INT32）(1953)	rvv_optimized_ops::MulInt32	PASS	mul_test	mul_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+11	MulElementwise（UINT8）(2114)	rvv_optimized_ops::MulUint8	PASS	mul_test	mul_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+12	MulSimpleBroadcast（UINT8）(2190)	rvv_optimized_ops::MulScalarUint8	PASS	mul_test	mul_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+13	MulSimpleBroadcast（FP32）(2261)	rvv_optimized_ops::MulScalarFloat	PASS	mul_test	mul_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+14	LstmCell<StateIntegerBits> (2689)	tensor_utils::RvvLstmCellQuantized	PASS	lstm_test	lstm_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+15	AveragePool（UINT8）(2970)	rvv_optimized_ops::AveragePoolUint8	PASS	internal-averagepool_quantized_test	internal/averagepool_quantized_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+16	MaxPool（UINT8）(3231)	rvv_optimized_ops::MaxPoolChannels<uint8_t>	PASS	internal-maxpool_quantized_test	internal/maxpool_quantized_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+17	StoreValue（INT8）(3682)	rvv_optimized_ops::SoftmaxInt8Lut	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+18	StoreValue（UINT8）(3694)	rvv_optimized_ops::SoftmaxInt8Lut	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+19	Logistic（INT16）(3993)	tensor_utils::RvvApplySigmoid	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+20	Tanh（INT16）(4107)	tensor_utils::RvvApplyTanhWithInputLeftShift	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+21	Quantize (5127)	rvv_optimized_ops::QuantizeUniform	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+22	Quantize（per-channel，single rounding）(5192)	rvv_optimized_ops::QuantizePerChannel + RvvVectorizedQuantizePerChannel	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+23	Quantize（per-channel，single rounding）(5282)	rvv_optimized_ops::QuantizePerChannel + RvvVectorizedQuantizePerChannel	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+24	Quantize（per-channel，double rounding）(5372)	rvv_optimized_ops::QuantizePerChannel + RvvVectorizedQuantizePerChannel	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+25	Quantize（per-channel，double rounding）(5463)	rvv_optimized_ops::QuantizePerChannel + RvvVectorizedQuantizePerChannel	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+26	Requantize<int8_t, uint8_t> (5729)	rvv_optimized_ops::Requantize	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+27	Requantize<uint8_t, int8_t> (5816)	rvv_optimized_ops::Requantize	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+28	Requantize<int8_t, int8_t> (5894)	rvv_optimized_ops::Requantize	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+29	Requantize<uint8_t, uint8_t> (5973)	rvv_optimized_ops::Requantize	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+30	Dequantize（int8）(6370)	rvv_optimized_ops::Dequantize	PASS	dequantize_test	dequantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+31	Dequantize（uint8）(6410)	rvv_optimized_ops::Dequantize	PASS	dequantize_test	dequantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+32	Dequantize（int16）(6449)	rvv_optimized_ops::DequantizeInt16	PASS	dequantize_test	dequantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+33	AffineQuantize（int8）(6502)	rvv_optimized_ops::AffineQuantize<int8_t>	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+34	AffineQuantize（uint8）(6560)	rvv_optimized_ops::AffineQuantize<uint8_t>	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+35	AffineQuantize（int16）(6618)	rvv_optimized_ops::AffineQuantize<int16_t>	PASS	quantize_test	quantize_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+36	HardSwish（FP32）(6057)	rvv_optimized_ops::HardSwishFloat	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+37	SaturateAndStore（uint8）(6118)	rvv_optimized_ops::HardSwishQuantized 的向量 narrowing helper	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+38	SaturateAndStore（int8）(6125)	rvv_optimized_ops::HardSwishQuantized 的向量 narrowing helper	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+39	HardSwish<T>（量化）(6134)	rvv_optimized_ops::HardSwishQuantized	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+40	ScaleWithNewZeroPoint (6356)	rvv_optimized_ops::Dequantize 共享输入转换路径	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+41	SaturatingRounding (6677)	16-bit RVV fixed-point helper pipeline	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+42	FixedPoint4Logistic (6699)	tensor_utils::RvvLogistic16BitPrecision 共享 helper	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+43	FixedPoint4Tanh (6729)	tensor_utils::RvvTanh16BitPrecision 共享 helper	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+44	CalculateUnsignedClampingWithRangeBitMasks (6757)	16-bit RVV narrowing/clamp helper	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+45	CalculateSignedClampingWithRangeBitMasks (6778)	16-bit RVV narrowing/clamp helper	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+46	ClampWithRangeAndStore（uint8）(6799)	16-bit RVV narrowing/clamp helper	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+47	ClampWithRangeAndStore（int8）(6806)	16-bit RVV narrowing/clamp helper	PASS	internal-tensor_utils_test	internal/tensor_utils_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+48	Tanh16bitPrecision（uint8）(6818)	tensor_utils::RvvTanh16BitPrecisionUint8	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+49	Tanh16bitPrecision（int8）(6927)	tensor_utils::RvvTanh16BitPrecisionInt8	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+50	Logistic16bitPrecision（uint8）(7022)	tensor_utils::RvvLogistic16BitPrecisionUint8	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+51	Logistic16bitPrecision（int8）(7115)	tensor_utils::RvvLogistic16BitPrecisionInt8	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+52	MaximumElementwise (7230)	rvv_optimized_ops::MaximumInt8	PASS	maximum_minimum_test	maximum_minimum_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+53	MaximumScalarBroadcast (7251)	rvv_optimized_ops::MaximumScalarInt8	PASS	maximum_minimum_test	maximum_minimum_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+54	MinimumElementwise (7274)	rvv_optimized_ops::MinimumInt8	PASS	maximum_minimum_test	maximum_minimum_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+55	MinimumScalarBroadcast (7295)	rvv_optimized_ops::MinimumScalarInt8	PASS	maximum_minimum_test	maximum_minimum_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+56	PReluScalarBroadcast (7395)	rvv_optimized_ops::PReluScalarFloat	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+57	PReluElementWise (7444)	rvv_optimized_ops::PReluElementwiseFloat	PASS	activations_test	activations_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+58	ArgMinVector<float> (7548)	rvv_optimized_ops::ArgMinFloat	PASS	arg_min_max_test	arg_min_max_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+59	ArgMaxVector<float> (7604)	rvv_optimized_ops::ArgMaxFloat	PASS	arg_min_max_test	arg_min_max_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+60	ArgMaxVector<int8_t> (7660)	rvv_optimized_ops::ArgMaxInteger<int8_t>	PASS	arg_min_max_test	arg_min_max_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS
+61	ArgMaxVector<uint8_t> (7709)	rvv_optimized_ops::ArgMaxInteger<uint8_t>	PASS	arg_min_max_test	arg_min_max_test.cc	PASS	PASS	PASS	PASS	STATIC-PASS

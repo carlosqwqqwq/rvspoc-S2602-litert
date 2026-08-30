@@ -1,0 +1,2 @@
+model	precision	gcv_avg_ms	gc_avg_ms	gcv_p50_ms	gc_p50_ms	gcv_p95_ms	gc_p95_ms	gcv_std_ms	gc_std_ms	gcv_fps	gc_fps	gcv_p95_avg	gc_p95_avg	gcv_vs_gc	gcv_init_ms	gc_init_ms	gcv_footprint_mb	gc_footprint_mb	threads	warmup_runs	num_runs
+EfficientDet-Lite0	INT8	3340.270	7477.056	3201.113	7372.711	3995.759	8363.659	333.136	415.871	0.299377	0.133742	1.196	1.119	2.238x	133.474	116.023	19.3242	20.3477	8	3	10

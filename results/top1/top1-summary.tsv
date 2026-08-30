@@ -1,0 +1,4 @@
+mobilenet_v1_1.0_224	match=200/200	100.0%	diffs=[]
+mobilenet_v1_1.0_224_quant	match=200/200	100.0%	diffs=[]
+mobilenet_v2_1.0_224	match=200/200	100.0%	diffs=[]
+mobilenet_v2_1.0_224_quant	match=200/200	100.0%	diffs=[]

@@ -7,7 +7,7 @@ import struct
 import sys
 
 
-ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/model-differential-current")
+ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("results/model-differential")
 MODELS = (
     ("v1-fp32", "fp32"),
     ("v1-int8", "int8"),
@@ -16,6 +16,12 @@ MODELS = (
     ("efficientdet-fp32", "fp32"),
     ("efficientdet-int8", "int8"),
 )
+
+
+def max_int8_diff(candidate: bytes, reference: bytes) -> int:
+    actual = struct.unpack(f"<{len(candidate)}b", candidate)
+    expected = struct.unpack(f"<{len(reference)}b", reference)
+    return max((abs(a - b) for a, b in zip(actual, expected)), default=0)
 
 
 def main() -> int:
@@ -27,9 +33,9 @@ def main() -> int:
             if len(candidate) != len(reference):
                 raise AssertionError(f"{name} VLEN={vlen}: output length differs")
             if dtype == "int8":
-                diffs = [abs(a - b) for a, b in zip(candidate, reference) if a != b]
-                maximum = max(diffs, default=0)
-                print(f"  VLEN={vlen} byte_diffs={len(diffs)} max_byte_diff={maximum}")
+                diffs = sum(a != b for a, b in zip(candidate, reference))
+                maximum = max_int8_diff(candidate, reference)
+                print(f"  VLEN={vlen} byte_diffs={diffs} max_int8_diff={maximum}")
                 if maximum > 1:
                     raise AssertionError(f"{name} VLEN={vlen}: INT8 error > 1 LSB")
             else:

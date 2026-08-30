@@ -1,0 +1,5 @@
+model	x86_correct	rv_correct	total	x86_accuracy	rv_accuracy	delta_pp	argmax_agree	requirement
+mobilenet_v1_fp32	139	139	200	69.50%	69.50%	+0.00	200/200	PASS
+mobilenet_v1_int8	153	153	200	76.50%	76.50%	+0.00	200/200	PASS
+mobilenet_v2_fp32	129	129	200	64.50%	64.50%	+0.00	200/200	PASS
+mobilenet_v2_int8	153	153	200	76.50%	76.50%	+0.00	200/200	PASS

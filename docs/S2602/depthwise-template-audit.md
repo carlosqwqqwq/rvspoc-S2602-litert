@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # S2602 Depthwise 58 个 ARM 模板特化审计
 
 基线：LiteRT v2.1.4，commit `ea79caffdd0f52cd44f203674f18a16a3cb861ad`。这里把 ARM Neon 源码中的每个 `template <>` 特化逐项列出，不把“通用 RVV 循环”误写成 58 个同名模板的复制实现。
@@ -76,6 +78,6 @@
 | UINT8 `depthwiseconv_uint8.h` | 22 | 9 | 13 | 22 个由通用 RVV 入口覆盖（M=1 通道路径 + M>1 fan-out 路径） |
 | **合计** | **58** | **24** | **34** | **58/58 call-site family 路由至通用 RVV；不是 58 个独立专用微内核** |
 
-六个冻结模型的 depthwise 实际都是 `depth_multiplier=1`；当前 QEMU VLEN=128/256/512 六模型共 18/18 通过，INT8 最大差异 1 LSB、FP32 最大绝对误差 `6.020e-6`。M>1 另由独立 scalar reference 覆盖 M=2/3/5/17、VLEN=128/256/512/1024、行切分与零点边界，四档均通过，证据见 `results/depthwise-multiplier-differential-20260818/`；模型证据见 `results/rvv-depthwise-multiplier-final-20260818/`，官方 `internal_tensor_utils_test` 三档各 87/87 见 `results/cmake-kernel-test-current-source-20260818/`。
+六个冻结模型的 depthwise 实际都是 `depth_multiplier=1`；当前 QEMU VLEN=128/256/512 六模型共 18/18 通过，INT8 最大差异 1 LSB、FP32 最大绝对误差 `6.020e-6`。M>1 另由独立 scalar reference 覆盖 M=2/3/5/17、VLEN=128/256/512/1024、行切分与零点边界，四档均通过，证据见 `results/depthwise/`；模型证据见 `results/model-differential/`，官方 kernel suite 三档各 137/137 见 `results/official-kernel-suite/`。
 
 因此本表用于防止覆盖宣传失真：功能组口径仍为六模型实际命中的 27/27；实际 61 个 ARM 保护函数入口和这 58 个 ARM 模板特化不混为一个百分比，历史 63 行入口表中的两个 Pow 函数不属于 ARM 分母。当前 generic RVV 已覆盖该 depthwise family 的 M=1/M>1 layout，但没有把一个 generic 入口宣传成 58 个独立 ARM template 微内核；非 RVV 目标仍保留标量回退。

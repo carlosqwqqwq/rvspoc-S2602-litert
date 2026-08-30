@@ -1,0 +1,29 @@
+fp32 multiplier=2 max_abs_error=0
+uint8 multiplier=2 offsets=-13,-121 exact=1
+uint8 multiplier=2 offsets=0,0 exact=1
+uint8 multiplier=2 offsets=-255,-255 exact=1
+int8 multiplier=2 input_offset=-128 exact=1
+int8 multiplier=2 input_offset=-3 exact=1
+int8 multiplier=2 input_offset=0 exact=1
+fp32 multiplier=3 max_abs_error=0
+uint8 multiplier=3 offsets=-13,-121 exact=1
+uint8 multiplier=3 offsets=0,0 exact=1
+uint8 multiplier=3 offsets=-255,-255 exact=1
+int8 multiplier=3 input_offset=-128 exact=1
+int8 multiplier=3 input_offset=-3 exact=1
+int8 multiplier=3 input_offset=0 exact=1
+fp32 multiplier=5 max_abs_error=0
+uint8 multiplier=5 offsets=-13,-121 exact=1
+uint8 multiplier=5 offsets=0,0 exact=1
+uint8 multiplier=5 offsets=-255,-255 exact=1
+int8 multiplier=5 input_offset=-128 exact=1
+int8 multiplier=5 input_offset=-3 exact=1
+int8 multiplier=5 input_offset=0 exact=1
+fp32 multiplier=17 max_abs_error=0
+uint8 multiplier=17 offsets=-13,-121 exact=1
+uint8 multiplier=17 offsets=0,0 exact=1
+uint8 multiplier=17 offsets=-255,-255 exact=1
+int8 multiplier=17 input_offset=-128 exact=1
+int8 multiplier=17 input_offset=-3 exact=1
+int8 multiplier=17 input_offset=0 exact=1
+DEPTHWISE_MULTIPLIER_DIFFERENTIAL_PASS cases=4

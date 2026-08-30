@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
 # S2602 61 个 ARM 优化入口逐项证据矩阵
 
 绑定源码：LiteRT v2.1.4，基线 `ea79caffdd0f52cd44f203674f18a16a3cb861ad`；当前候选源码为本仓库根目录。
